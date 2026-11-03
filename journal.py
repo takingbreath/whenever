@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 JOURNAL_FILE = ROOT / "data" / "journal.db"
-KINDS = ("event", "end", "record", "action", "notify", "say", "draw", "image", "log", "error")
+KINDS = ("event", "end", "record", "action", "notify", "say", "draw", "image", "gallery", "log", "error")
 MAX_ROWS = 5000
 MAX_TEXT = 300
 MAX_DATA_BYTES = 2000
@@ -69,6 +69,13 @@ class Journal:
             rows = self.db.execute(sql, args).fetchall()
         return [{"t": t, "rule": rule, "kind": kind, "name": name, "seconds": seconds, "text": text,
                  "values": json.loads(data or "{}")} for t, rule, kind, name, seconds, text, data in reversed(rows)]
+
+    def runs(self, rule_id):
+        """How many events a Whenever had, and when the last one was."""
+        with self.lock:
+            count, last = self.db.execute(
+                "SELECT COUNT(*), MAX(t) FROM entries WHERE rule_id = ? AND kind = 'event'", (str(rule_id)[:20],)).fetchone()
+        return count, last
 
     def summary(self):
         """What the journal holds, for Wonder: each rule, kind and name, with the keys of its values."""

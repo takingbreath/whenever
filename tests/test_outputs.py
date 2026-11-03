@@ -373,5 +373,92 @@ class Finish(unittest.TestCase):
         self.assertIn("own id", output)
 
 
+class ClickAndPictures(App):
+    def test_a_phone_alert_links_back_to_the_hosted_page(self):
+        with mock.patch.object(server, "HOSTS", ("wheneverwhatever.si",)):
+            self.call("act", name="Phone", inputs={"text": "Hi"})
+        self.assertEqual(self.opener.requests[0].get_header("Click"), "https://wheneverwhatever.si/#/activity")
+
+    def test_a_local_page_sends_no_link(self):
+        self.call("act", name="Phone", inputs={"text": "Hi"})
+        self.assertIsNone(self.opener.requests[0].get_header("Click"))
+
+    def test_a_notify_picture_reaches_the_journal_as_a_page_address(self):
+        (Path(self.logs) / "frames").mkdir()
+        (Path(self.logs) / "frames" / "a.jpg").write_bytes(b"jpeg")
+        self.rule._handle({"do": "notify", "text": "Car", "picture": "frames/a.jpg"})
+        row = self.app.journal.history(kind="notify")[0]
+        self.assertEqual(row["values"]["picture"], "/rule-file/r1/frames/a.jpg")
+        self.assertEqual(self.opener.requests[0].data, b"jpeg")
+
+    def test_the_page_learns_the_phone_topic(self):
+        self.assertEqual(self.app.status()["phone_topic"], "whenever-test")
+
+
+class Understand(unittest.TestCase):
+    def test_spark_says_back_when_and_then(self):
+        reply = {"output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps({
+            "when": "When a car blocks the gate", "then": ["Alert your phone"], "watch": ["Gate wide"],
+            "missing": "", "question": ""})}]}], "usage": {"input_tokens": 1000, "output_tokens": 100}}
+
+        class Client:
+            def __init__(self):
+                self.bodies = []
+
+            def _post(self, body, **kwargs):
+                self.bodies.append(body)
+                return json.dumps(reply)
+
+        client = Client()
+        summary, cost = writer.understand(client, "When a car blocks the gate, alert my phone", "- Phone", "- Gate wide")
+        self.assertEqual(summary["then"], ["Alert your phone"])
+        self.assertGreater(cost, 0)
+        self.assertEqual(client.bodies[0]["model"], writer.SPARK)
+        self.assertIn("- Phone", client.bodies[0]["input"])
+
+
+class Runs(App):
+    def test_runs_come_from_the_journal_and_survive_a_restart(self):
+        self.app.journal.add("event", "r1", "Gate", "car", t=100)
+        self.app.journal.add("event", "r1", "Gate", "car", t=200)
+        self.app.journal.add("draw", "r1", "Gate", t=201)
+        again = server.Rule(self.app, "r1", "Tell me", {"name": "Gate", "sensors": []}, Path(self.logs))
+        self.assertEqual((again.fired, again.last_fired), (2, 200))
+
+    def test_a_schedule_counts_as_a_run(self):
+        self.rule.schedules[0].next_t = 0
+        self.app.tick()
+        self.assertEqual(self.rule.fired, 1)
+        self.assertIsNotNone(self.rule.last_fired)
+
+
+class Pairing(unittest.TestCase):
+    def test_a_first_pairing_makes_a_private_topic_and_remembers_the_phone(self):
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder)
+        secrets = folder / "actions.env"
+        app = server.App(object(), folder, inline=True, connectors=Connectors(secrets_path=secrets),
+                         phone_file=folder / "phone.json")
+        self.assertFalse(app.status()["phone_paired"])
+        topic = app.phone_topic()
+        self.assertRegex(topic, r"^whenever-[0-9a-f]{16}$")
+        self.assertEqual(app.phone_topic(), topic)
+        self.assertEqual(oct(secrets.stat().st_mode & 0o777), "0o600")
+        self.assertEqual(app.status()["phone_topic"], topic)
+        app.set_paired(True)
+        again = server.App(object(), folder, inline=True, connectors=Connectors(secrets_path=secrets),
+                           phone_file=folder / "phone.json")
+        self.assertTrue(again.status()["phone_paired"])
+
+    def test_an_existing_topic_is_kept(self):
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder)
+        secrets = folder / "actions.env"
+        secrets.write_text("HUE_USER=abc\nNTFY_TOPIC=whenever-old\n")
+        app = server.App(object(), folder, inline=True, connectors=Connectors(secrets_path=secrets))
+        self.assertEqual(app.phone_topic(), "whenever-old")
+        self.assertIn("HUE_USER=abc", secrets.read_text())
+
+
 if __name__ == "__main__":
     unittest.main()

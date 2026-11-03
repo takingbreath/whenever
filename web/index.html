@@ -2,110 +2,259 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#F3F3F1">
   <title>Whenever</title>
+  <link rel="preload" href="/fonts/schibsted-grotesk.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%233346d3'/%3E%3Crect x='5' y='5' width='22' height='22' rx='5' fill='none' stroke='white' stroke-width='2.5'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <h1>Whenever</h1>
-    <p>Point at it, say it, or show it. Your camera runs it.</p>
-    <span id="status" class="pill">Starting</span>
-  </header>
-
-  <main>
-    <section class="stage">
-      <div id="frame" class="frame">
-        <video id="video" autoplay muted playsinline loop></video>
-        <canvas id="overlay"></canvas>
-        <img id="freeze" class="freeze" alt="" hidden>
-        <canvas id="ink"></canvas>
-        <div id="tag" class="tag" hidden></div>
-        <div id="replay" class="replay" hidden>Replay</div>
-        <div id="cue" class="cue" hidden></div>
-        <div id="flash" class="flash" hidden></div>
-        <div id="notice" class="notice" hidden></div>
+  <div class="app">
+    <nav class="nav" aria-label="Main">
+      <a class="brand" href="#/whenevers" aria-label="Whenever, home">
+        <span class="brand-mark" aria-hidden="true"></span><span class="brand-word">Whenever</span>
+      </a>
+      <a class="nav-link" href="#/live" data-nav="live"><span class="icon" data-icon="live"></span><span>Live</span></a>
+      <a class="nav-link" href="#/whenevers" data-nav="whenevers"><span class="icon" data-icon="list"></span><span>Whenevers</span></a>
+      <a class="nav-link nav-create" href="#/create" data-nav="create"><span class="icon" data-icon="plus"></span><span>Create</span></a>
+      <a class="nav-link" href="#/activity" data-nav="activity"><span class="icon" data-icon="pulse"></span><span>Activity</span><i class="nav-dot" id="activity-dot" hidden></i></a>
+      <a class="nav-link" href="#/actions" data-nav="actions"><span class="icon" data-icon="bolt"></span><span>Actions</span></a>
+      <div class="nav-foot">
+        <p class="spend"><span id="spend-text">$0.00 of $5 today</span><span class="spend-bar"><i id="spend-fill"></i></span></p>
       </div>
-      <dl class="stats">
-        <div><dt>Frame to decision</dt><dd id="s-latency">–</dd></div>
-        <div><dt>SAM 3.1</dt><dd id="s-sam">–</dd></div>
-        <div><dt>Spark</dt><dd id="s-spark">–</dd></div>
-        <div><dt>Frames sent</dt><dd id="s-sent">0</dd></div>
-        <div><dt>Frames skipped</dt><dd id="s-skipped">0</dd></div>
-        <div><dt>Estimated spend</dt><dd id="s-spend">$0.00</dd></div>
-      </dl>
-      <div id="controls" class="controls" hidden></div>
-    </section>
+    </nav>
 
-    <aside>
-      <form id="rule-form">
-        <label id="sentence-label" for="sentence">When&hellip;</label>
-        <textarea id="sentence" rows="2" maxlength="2000"
-          placeholder="Count how many times I drink water."></textarea>
-        <div id="pointed-box" class="pointed" hidden>
-          <span>Pointing at <b id="pointed-name"></b></span>
-          <button id="clear-pointed" type="button" class="quiet">Remove</button>
+    <main class="screens">
+      <!-- Start: the first visit chooses a camera. -->
+      <section class="screen screen-start" data-screen="start" hidden>
+        <div class="start">
+          <h1 class="start-title">Whenever it happens, do whatever you want.</h1>
+          <p class="lede">Tell a camera what to watch for in plain words. Meta's models write the rule, watch the frames, and act: an alert on your phone, a light, any web service, or a report later.</p>
+          <div class="choices">
+            <button type="button" class="choice choice-main" data-source="device">
+              <span class="icon" data-icon="camera"></span>
+              <span><b>Use this device's camera</b><small>Your browser asks once.</small></span>
+            </button>
+            <button type="button" class="choice" data-source="clip">
+              <span class="icon" data-icon="play"></span>
+              <span><b>Try the demo clip</b><small>AI-made frames of a person at a desk.</small></span>
+            </button>
+            <details class="choice choice-more">
+              <summary><span class="icon" data-icon="cctv"></span><span><b>Connect security cameras</b><small>EZVIZ, Hikvision or any RTSP camera.</small></span></summary>
+              <p>Run <code>python3 camera.py</code> on the computer that can reach your cameras. It reads the cameras listed in <code>camera.env</code> and sends them to this page as one wall. The README has the steps.</p>
+            </details>
+          </div>
+          <p class="fine">Frames go to Meta's API when the picture changes. Each rule's code runs in its own locked folder with no network.</p>
         </div>
-        <div id="example-box" class="example" hidden>
-          <div id="thumbs" class="thumbs"></div>
-          <button id="clear-example" type="button" class="quiet">Remove</button>
+      </section>
+
+      <!-- Live: the camera view. It stays rendered on every screen, so capture never stops. -->
+      <section class="screen screen-live offstage" data-screen="live">
+        <header class="head">
+          <h1>Live</h1>
+          <span id="status" class="status">Starting</span>
+        </header>
+        <div class="point-banner" id="point-banner" hidden>
+          <span class="icon" data-icon="hand"></span>
+          <p id="point-text">Tap the thing you mean.</p>
+          <button type="button" class="pill-button small" id="point-done">Back to Create</button>
         </div>
-        <div class="form-row">
-          <button id="add" type="submit">Add rule</button>
-          <button id="cancel-edit" type="button" class="quiet" hidden>Cancel</button>
-          <button id="record" type="button" class="quiet">Record an example</button>
-          <button id="talk" type="button" class="quiet">Hold to talk</button>
+        <div class="focus" id="focus" hidden></div>
+        <div class="frame-wrap" id="frame-wrap">
+        <div id="frame" class="frame">
+          <video id="video" autoplay muted playsinline loop></video>
+          <canvas id="overlay"></canvas>
+          <img id="freeze" class="freeze" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="" hidden>
+          <canvas id="ink"></canvas>
+          <div id="tag" class="tag" hidden></div>
+          <div id="replay" class="replay" hidden>Replay</div>
+          <div id="cue" class="cue" hidden></div>
+          <div id="notice" class="notice" hidden></div>
+          <div id="tile-focus" class="tile-focus" hidden></div>
         </div>
-        <p class="hint">Click anything in the view to point at it. Hold Space to talk.</p>
-        <ol id="steps" class="steps"></ol>
-        <p id="form-note" class="note"></p>
-      </form>
-
-      <div class="chips" aria-label="Examples">
-        <button type="button" class="chip">Count how many times I drink water.</button>
-        <button type="button" class="chip">Track how long each of my drinks lasts, and show the average.</button>
-        <button type="button" class="chip">Tell me if I pick up my phone more than 5 times in 10 minutes.</button>
-      </div>
-
-      <h2>Rules</h2>
-      <ul id="rules" class="rules"></ul>
-
-      <h2>Actions</h2>
-      <ul id="actions" class="actions"></ul>
-      <form id="action-form" class="action-form">
-        <label for="action-words">Connect an action</label>
-        <textarea id="action-words" rows="2" maxlength="6000"
-          placeholder="Turn my desk lamp on or off. It is Hue light 3 on my home bridge."></textarea>
-        <div class="form-row">
-          <button id="action-add" type="submit">Connect it</button>
         </div>
-        <p class="hint">Wonder writes the web request. You can paste docs or an example request. Do not paste a key: keys go in actions.env.</p>
-        <div id="action-draft" class="draft" hidden></div>
-        <p id="action-note" class="note"></p>
-      </form>
+        <div id="controls" class="controls" hidden></div>
+        <div class="live-strip" id="live-strip"></div>
+        <details class="numbers">
+          <summary>Numbers</summary>
+          <dl class="stats">
+            <div><dt>Frame to decision</dt><dd id="s-latency">–</dd></div>
+            <div><dt>SAM 3.1</dt><dd id="s-sam">–</dd></div>
+            <div><dt>Spark</dt><dd id="s-spark">–</dd></div>
+            <div><dt>Frames sent</dt><dd id="s-sent">0</dd></div>
+            <div><dt>Frames skipped</dt><dd id="s-skipped">0</dd></div>
+            <div><dt>Spend today</dt><dd id="s-spend">$0.00</dd></div>
+          </dl>
+        </details>
+      </section>
 
-      <h2>Events</h2>
-      <ol id="log" class="log"></ol>
+      <!-- My Whenevers -->
+      <section class="screen" data-screen="whenevers" hidden>
+        <header class="head">
+          <h1>My Whenevers</h1>
+        </header>
+        <div class="segmented" role="tablist" aria-label="Show" id="filter">
+          <button type="button" role="tab" aria-selected="true" data-filter="all">All</button>
+          <button type="button" role="tab" aria-selected="false" data-filter="on">Watching</button>
+          <button type="button" role="tab" aria-selected="false" data-filter="off">Stopped</button>
+        </div>
+        <ul class="cards" id="whenever-list"></ul>
+        <section class="more" id="more" hidden>
+          <h2 class="section-title">Start another</h2>
+          <div class="template-row" id="more-templates"></div>
+        </section>
+      </section>
 
-      <p class="privacy">Development mode: this app saves every frame and every model answer in the logs folder of the server that runs it. Frames go to Meta's API when the picture changes, and once every 10 seconds when it does not. Your voice goes to Meta's API only while you hold the talk key. Each rule's code runs in its own locked folder.</p>
-    </aside>
-  </main>
+      <!-- One Whenever -->
+      <section class="screen" data-screen="whenever" hidden>
+        <a class="back" href="#/whenevers"><span class="icon" data-icon="back"></span>My Whenevers</a>
+        <div id="detail"></div>
+      </section>
 
-  <dialog id="viewer">
-    <div class="evidence-head">
+      <!-- Create -->
+      <section class="screen screen-create" data-screen="create" hidden>
+        <header class="head">
+          <h1 id="create-title">Create a Whenever</h1>
+        </header>
+
+        <div class="create-step" data-step="compose">
+          <form id="rule-form" class="builder" autocomplete="off">
+            <div class="slot-block">
+              <label class="connector" id="sentence-label" for="sentence">When</label>
+              <div class="slot slot-text">
+                <textarea id="sentence" rows="2" maxlength="2000" placeholder="a car blocks the gate for 5 minutes"></textarea>
+                <button id="talk" type="button" class="mic" aria-label="Hold to talk"><span class="icon" data-icon="mic"></span></button>
+              </div>
+              <div class="aids">
+                <div class="chips" id="camera-chips" aria-label="Cameras to watch"></div>
+                <button id="point-start" type="button" class="aid"><span class="icon" data-icon="hand"></span>Point at a thing</button>
+                <button id="record" type="button" class="aid"><span class="icon" data-icon="record"></span>Show an example</button>
+              </div>
+              <div id="pointed-box" class="attached" hidden>
+                <span class="icon" data-icon="hand"></span><span>Pointing at <b id="pointed-name"></b></span>
+                <button id="clear-pointed" type="button" class="link-button">Remove</button>
+              </div>
+              <div id="example-box" class="attached" hidden>
+                <div id="thumbs" class="thumbs"></div>
+                <button id="clear-example" type="button" class="link-button">Remove</button>
+              </div>
+            </div>
+
+            <div class="slot-block">
+              <span class="connector">then</span>
+              <div class="chips then-chips" id="then-chips" role="group" aria-label="Actions"></div>
+              <input id="then-extra" class="slot slot-line" type="text" maxlength="400" placeholder="and anything else, in your words">
+            </div>
+
+            <p class="sentence-preview" id="sentence-preview" aria-live="polite"></p>
+
+            <div class="form-row">
+              <button id="check" type="submit" class="pill-button big">Check it</button>
+              <button id="cancel-edit" type="button" class="link-button" hidden>Cancel</button>
+            </div>
+            <p id="form-note" class="note" role="status"></p>
+          </form>
+
+          <section class="templates" aria-labelledby="templates-title">
+            <h2 id="templates-title">Or start from one of these</h2>
+            <div class="template-groups" id="templates"></div>
+          </section>
+        </div>
+
+        <div class="create-step" data-step="check" hidden>
+          <div id="check-card"></div>
+          <div class="form-row">
+            <button id="add" type="button" class="pill-button big">Write it</button>
+            <button id="check-back" type="button" class="link-button">Change the words</button>
+          </div>
+          <p class="note" id="check-note"></p>
+        </div>
+
+        <div class="create-step" data-step="writing" hidden>
+          <div class="writing">
+            <h2 id="writing-title">Wonder is writing your Whenever</h2>
+            <p class="note" id="writing-time">This takes about a minute.</p>
+            <ol id="steps" class="progress"></ol>
+          </div>
+        </div>
+
+        <div class="create-step" data-step="done" hidden>
+          <div id="done-card"></div>
+        </div>
+      </section>
+
+      <!-- Activity -->
+      <section class="screen" data-screen="activity" hidden>
+        <header class="head">
+          <h1>Activity</h1>
+        </header>
+        <div class="segmented" role="tablist" aria-label="View" id="activity-tabs">
+          <button type="button" role="tab" aria-selected="true" data-view="feed">Feed</button>
+          <button type="button" role="tab" aria-selected="false" data-view="reports">Reports</button>
+        </div>
+        <div data-view-panel="feed">
+          <div class="chips filter-chips" id="activity-filter">
+            <button type="button" class="chip on" data-kind="all">Everything</button>
+            <button type="button" class="chip" data-kind="alerts">Alerts</button>
+            <button type="button" class="chip" data-kind="action">Actions</button>
+            <button type="button" class="chip" data-kind="error">Problems</button>
+          </div>
+          <p class="guide" id="activity-guide"></p>
+          <ol class="feed" id="activity-list"></ol>
+        </div>
+        <div data-view-panel="reports" hidden>
+          <div id="reports"></div>
+        </div>
+      </section>
+
+      <!-- Actions -->
+      <section class="screen" data-screen="actions" hidden>
+        <header class="head">
+          <h1>Actions</h1>
+        </header>
+        <div id="phone-card"></div>
+        <h2 class="section-title">Connected</h2>
+        <ul id="actions" class="action-list"></ul>
+        <form id="action-form" class="connect">
+          <h2 class="section-title"><label for="action-words">Connect an action</label></h2>
+          <p class="note">Say what it should do. You can paste docs or an example request. Do not paste a key: keys go in <code>actions.env</code>.</p>
+          <textarea id="action-words" rows="3" maxlength="6000" placeholder="Turn my desk lamp on or off. It is Hue light 3 on my home bridge."></textarea>
+          <div class="form-row">
+            <button id="action-add" type="submit" class="pill-button">Connect it</button>
+          </div>
+          <div id="action-draft" class="draft" hidden></div>
+          <p id="action-note" class="note" role="status"></p>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <div id="flash" class="toast" role="status" hidden></div>
+
+  <dialog id="viewer" class="sheet">
+    <div class="sheet-head">
       <strong id="viewer-title"></strong>
-      <button id="viewer-close" type="button" class="quiet small">Close</button>
+      <button id="viewer-close" type="button" class="icon-button" aria-label="Close"><span class="icon" data-icon="x"></span></button>
     </div>
     <div class="viewer-frame">
-      <img id="viewer-image" alt="The full camera frame">
+      <img id="viewer-image" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="The full camera frame">
       <div id="viewer-box" class="viewer-box" hidden></div>
     </div>
   </dialog>
 
-  <dialog id="evidence">
-    <div class="evidence-head">
-      <b>What the model saw</b>
-      <button id="evidence-close" type="button" class="quiet small">Close</button>
+  <dialog id="pair" class="sheet" aria-labelledby="pair-title">
+    <div class="sheet-head">
+      <strong id="pair-title">Pair your phone</strong>
+      <button id="pair-close" type="button" class="icon-button" aria-label="Close"><span class="icon" data-icon="x"></span></button>
+    </div>
+    <div id="pair-body"></div>
+  </dialog>
+
+  <dialog id="evidence" class="sheet">
+    <div class="sheet-head">
+      <strong>What the model saw</strong>
+      <button id="evidence-close" type="button" class="icon-button" aria-label="Close"><span class="icon" data-icon="x"></span></button>
     </div>
     <div id="evidence-body"></div>
   </dialog>

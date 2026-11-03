@@ -44,6 +44,21 @@ Code from others is not in this repo. You install it:
 
 To run without a camera, open <http://127.0.0.1:8787/?clip=1>. The test clip uses AI-made frames.
 
+## The app
+
+One rule is called a **Whenever**. The page works like IFTTT, with one sentence per rule:
+
+- **Start:** choose this device's camera, the demo clip, or security cameras.
+- **Create:** fill two slots, **When** (type it or hold the mic) and **then** (tap the actions). Point at a thing or show an example if the words need help. Templates cover homes, shops and cafés, reports and gestures.
+- **Check:** before Wonder spends money, Spark says back how it read the words, for about $0.002. It warns when an action is missing.
+- **My Whenevers:** a colour card for each Whenever, with an on/off switch. A red tab slides out under a card that fired.
+- **Whenever page:** live values, what it does, how it watches, its activity with proof frames, the code, edit and delete. **Watch it live** opens Live focused on it: its camera is lit and the rest of the wall dims.
+- **Activity:** one feed from the journal, with proof pictures, "Why?" and Right or Wrong. **Reports** show events by hour, by Whenever and by action.
+- **Actions:** pair a phone in three steps (install ntfy, follow the private topic, confirm a test alert), test and remove actions, and connect a new one in plain words. The first time you choose **Alert my phone**, the same pairing sheet opens.
+- **Live:** the camera wall, the lens and light controls, and the Whenevers that watch.
+
+A phone alert opens the Activity page of the hosted app when you tap it.
+
 ## How it works
 
 1. **Trigger:** a person writes or speaks a sentence, records an example, or does both. Muse Voice Transcribe turns speech into text while the talk key is held. If there is only a recording, Muse Spark writes the sentence.

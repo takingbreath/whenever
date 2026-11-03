@@ -1316,7 +1316,8 @@ class Draw(TempLogs):
         rule = server.Rule(app, "r", "s", {"sensors": [{"id": "s", "question": "q"}]}, None)
         rule._handle({"do": "draw", "text": "hello"})
         self.assertEqual(self.feed(app, "draw")[0]["text"], "hello")
-        self.assertEqual(rule.fired, 1)
+        # A run is an event of the Whenever. A draw is one of its outputs, so it does not count as one.
+        self.assertEqual(rule.fired, 0)
 
 
 class Pointing(TempLogs):

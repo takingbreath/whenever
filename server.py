@@ -30,7 +30,7 @@ import actions
 import sandbox
 import writer
 from camera_control import ControlError, Controls
-from connectors import ACTIONS_FILE, ActionError, Connectors, check_draft
+from connectors import ACTIONS_FILE, ActionError, Connectors, check_draft, read_secrets
 from journal import JOURNAL_FILE, Journal
 from engine import SensorState, pick_frames, spread
 from evidence import Evidence
@@ -53,6 +53,7 @@ MAX_LOGINS_PER_MINUTE = 10
 
 DATA_DIR = ROOT / "data"
 RULES_FILE = DATA_DIR / "rules.json"
+PHONE_FILE = DATA_DIR / "phone.json"
 MAX_RULES = 5
 MAX_SCHEDULES = 4
 MIN_SCHEDULE_S = 60
@@ -151,6 +152,7 @@ STATIC = {
     "/mic.js": ("web/mic.js", "text/javascript; charset=utf-8"),
     "/style.css": ("web/style.css", "text/css; charset=utf-8"),
     "/testdata/clip.webm": ("testdata/clip.webm", "video/webm"),
+    "/fonts/schibsted-grotesk.woff2": ("web/fonts/schibsted-grotesk.woff2", "font/woff2"),
 }
 
 
@@ -349,7 +351,8 @@ class Rule:
         self.acts = deque()
         self.lit = set()
         self.values = {}
-        self.fired = 0
+        # A run is one event of this Whenever. The journal keeps them, so the count survives a restart.
+        self.fired, self.last_fired = app.journal.runs(rule_id) if getattr(app, "journal", None) else (0, None)
         self.pending = 0
         self.worker = None
         self.paused = False
@@ -443,17 +446,14 @@ class Rule:
         elif kind == "error":
             self.app.add_feed(self, "error", message["trace"][-300:])
         elif kind == "draw":
-            self.fired += 1
             self.app.draw(self, message["text"], message.get("frame"), message.get("check"), message.get("target"))
         elif kind == "image":
-            self.fired += 1
             self.app.image(self, message["path"], message.get("caption", ""), message.get("check"))
         elif kind == "record":
             self.app.record(self, message["name"], message.get("values") or {})
         elif kind in ("notify", "say"):
-            self.fired += 1
             actions.run({"action": kind, "text": message["text"]})
-            self.app.add_feed(self, kind, message["text"])
+            self.app.add_feed(self, kind, message["text"], url=self.app.picture_url(self, message.get("picture")))
             if kind == "notify":
                 self.app.alert(self, message["text"], message.get("picture"))
 
@@ -466,13 +466,15 @@ class Rule:
         return {
             "id": self.id, "sentence": self.sentence, "name": self.name, "plan": self.plan,
             "sensors": [s.public() for s in self.sensors], "values": self.values, "fired": self.fired,
-            "schedules": [s.public() for s in self.schedules],
+            "schedules": [s.public() for s in self.schedules], "last_fired": self.last_fired,
+            "cameras": self.app.watched(self),
             "pointed": (self.pointed or {}).get("noun", ""), "paused": self.paused,
         }
 
 
 class App:
-    def __init__(self, client, logs_dir=LOGS_DIR, inline=False, journal=None, connectors=None, rules_file=None):
+    def __init__(self, client, logs_dir=LOGS_DIR, inline=False, journal=None, connectors=None, rules_file=None,
+                 phone_file=None):
         """inline runs checks inside frame(), for tests. Live checks run in the background.
 
         With no rules_file, rules do not return after a restart, and the journal and the actions
@@ -483,6 +485,11 @@ class App:
         self.journal = journal or Journal()
         self.connectors = connectors or Connectors()
         self.rules_file = rules_file
+        self.phone_file = phone_file
+        try:
+            self.phone_paired = bool(json.loads(Path(phone_file).read_text()).get("paired")) if phone_file else False
+        except (OSError, ValueError):
+            self.phone_paired = False
         self.drafts = OrderedDict()
         self.evidence = Evidence(logs_dir)
         self.entries = {}
@@ -538,9 +545,64 @@ class App:
             item = {"id": self.feed_id, "rule": rule.name, "kind": kind, "text": text, **extra}
             self.feed.append(item)
         self.evidence.save_feed(item)
-        if kind in ("notify", "say", "draw", "image", "log", "error"):
-            self.journal.add(kind, rule.id, rule.name, text=text)
+        if kind in ("notify", "say", "draw", "image", "gallery", "log", "error"):
+            picture = extra.get("url") or extra.get("frame") or ((extra.get("pictures") or [{}])[0].get("zoom"))
+            if picture and picture.startswith("/evidence/") and getattr(rule, "folder", None):
+                # The log of one run is served only during that run. The rule's own copy lasts.
+                name = picture.split("?")[0].rsplit("/", 1)[-1]
+                if (Path(rule.folder) / "frames" / name).is_file():
+                    picture = f"/rule-file/{rule.id}/frames/{name}"
+            values = {k: v for k, v in (("picture", picture), ("check", extra.get("check"))) if v}
+            self.journal.add(kind, rule.id, rule.name, text=text, values=values)
         return item
+
+    def picture_url(self, rule, path):
+        """The page address of a picture in a rule's folder, or None."""
+        file = rule_picture(rule.folder, path) if path and rule.folder else None
+        if not file:
+            return None
+        return f"/rule-file/{rule.id}/{quote(str(file.relative_to(Path(rule.folder).resolve())))}"
+
+    def phone_topic(self):
+        """The private ntfy topic for phone alerts. A first pairing makes one, so nobody edits a file."""
+        topic = read_secrets(self.connectors.secrets_path).get("NTFY_TOPIC", "")
+        if topic:
+            return topic
+        topic = f"whenever-{secrets.token_hex(8)}"
+        path = Path(self.connectors.secrets_path)
+        old = path.read_text() if path.exists() else "# Keys for actions. Git ignores this file.\n"
+        path.write_text(old.rstrip("\n") + f"\nNTFY_TOPIC={topic}\n")
+        os.chmod(path, 0o600)
+        return topic
+
+    def set_paired(self, paired):
+        """The person saw the test alert on their phone, so phone alerts are ready."""
+        self.phone_paired = bool(paired)
+        if self.phone_file:
+            Path(self.phone_file).parent.mkdir(parents=True, exist_ok=True)
+            Path(self.phone_file).write_text(json.dumps({"paired": self.phone_paired}))
+        return self.phone_paired
+
+    def watched(self, rule):
+        """The cameras that a Whenever names in its words or its sensors. [] means every camera."""
+        text = " ".join([rule.sentence, *(f"{s.question} {s.target}" for s in rule.sensors)]).lower()
+        return [name for name in self.cameras if name.lower() in text]
+
+    def _event_tile(self, rule, box):
+        """Which camera tile of the wall an event came from, so the page can show that camera alone."""
+        columns, rows = self.wall
+        if columns * rows <= 1:
+            return None
+        if box and box.get("w") and box.get("h"):
+            x = (box["x1"] + box["x2"]) / 2 / box["w"]
+            y = (box["y1"] + box["y2"]) / 2 / box["h"]
+            return min(int(y * rows), rows - 1) * columns + min(int(x * columns), columns - 1)
+        named = self.watched(rule)
+        return self.cameras.index(named[0]) if len(named) == 1 else None
+
+    def click_url(self):
+        """Where a phone alert takes the person when they tap it. Only a hosted page has an address."""
+        return f"https://{HOSTS[0]}/#/activity" if HOSTS else None
 
     def capture_fps(self):
         """The fastest rate that any awake sensor asked for."""
@@ -561,6 +623,9 @@ class App:
                 "cameras": self.cameras,
                 "controls": self.controls.public(),
                 "actions": self.connectors.public(),
+                "phone_topic": read_secrets(self.connectors.secrets_path).get("NTFY_TOPIC", ""),
+                "phone_paired": self.phone_paired,
+                "platform": sys.platform, "hosted": bool(HOSTS),
                 "wall": self.wall,
                 "see_calls": self.see_calls,
                 "ask_calls": self.ask_calls,
@@ -715,6 +780,8 @@ class App:
             for schedule in rule.schedules:
                 if schedule.due(now):
                     self.journal.add("event", rule.id, rule.name, schedule.id, text="scheduled", t=now)
+                    rule.fired = getattr(rule, "fired", 0) + 1
+                    rule.last_fired = now
                     rule.send({"type": "on", "sensor": schedule.id, "t": now, "event": {"note": "It is time."}})
                     rule.send({"type": "off", "sensor": schedule.id, "t": now, "duration": 0.0})
             if camera or rule.schedules:
@@ -827,12 +894,13 @@ class App:
         rule.allow_act()
         inputs = dict(inputs or {})
         try:
-            result = self.connectors.run(name, inputs, self._picture(rule, picture))
+            result = self.connectors.run(name, inputs, self._picture(rule, picture), self.click_url())
         except ActionError as e:
             self.journal.add("action", rule.id, rule.name, name, text=str(e), values={"ok": False})
             raise
+        url = self.picture_url(rule, picture)
         self.journal.add("action", rule.id, rule.name, name, text=f"status {result['status']}",
-                         values={"ok": result["ok"], "inputs": inputs})
+                         values={"ok": result["ok"], "inputs": inputs, **({"picture": url} if url else {})})
         word = "done" if result["ok"] else f"failed with status {result['status']}"
         self._step(rule, check, {"act": name, "inputs": inputs, **result}, f"{name}: {word}")
         return result
@@ -854,7 +922,7 @@ class App:
 
     def _alert(self, rule, text, picture):
         try:
-            for name, result in self.connectors.alert(text, self._picture(rule, picture)):
+            for name, result in self.connectors.alert(text, self._picture(rule, picture), self.click_url()):
                 if not result["ok"]:
                     self.add_feed(rule, "error", f"{name} answered with status {result['status']}.")
         except (ActionError, ValueError, OSError) as e:
@@ -886,6 +954,20 @@ class App:
         if not action:
             raise ActionError("That draft is gone. Describe the action again.")
         return self.connectors.send(action, inputs)
+
+    def understand(self, sentence):
+        """Spark says back how it reads a rule, for about $0.002, before Wonder spends more."""
+        if self.stopped():
+            raise ValueError("The spend limit stopped this call.")
+        cameras = self.controls.describe(self.cameras) if self.cameras else ""
+        summary, cost = writer.understand(self.client, sentence, self.connectors.describe(), cameras)
+        with self.lock:
+            self.spark_usd += cost
+        return {**summary, "cost": round(cost, 4)}
+
+    def test_action(self, name, inputs):
+        """Runs a saved action from the page, so the person can see it work."""
+        return self.connectors.run(name, inputs, None, self.click_url())
 
     def save_draft(self, draft_id):
         with self.lock:
@@ -1530,7 +1612,16 @@ class App:
                 sensor.subjects = [*sensor.subjects, proof][-MAX_SUBJECTS:]
                 sensor.review_after = max(sensor.review_after, t + sensor.watch_s)
             detail = self._event_detail(rule, check, result, proof)
-            self.journal.add("event", rule.id, rule.name, sensor.id, text=detail["note"], t=t)
+            rule.fired = getattr(rule, "fired", 0) + 1
+            rule.last_fired = t
+            shared = next((f["path"] for f in detail["frames"] if f["name"] == proof and f["path"]), None)
+            values = {"check": check, **({"picture": f"/rule-file/{rule.id}/{shared}"} if shared else {})}
+            tile = self._event_tile(rule, (detail.get("boxes") or [None])[0])
+            if tile is not None:
+                values.update(tile=tile, wall=list(self.wall), camera=self.cameras[tile] if tile < len(self.cameras) else "")
+            if sensor.target:
+                values["what"] = sensor.target
+            self.journal.add("event", rule.id, rule.name, sensor.id, text=detail["note"], values=values, t=t)
             rule.send({"type": "on", "sensor": sensor.id, "t": t, "event": detail})
         if event == "moment":
             self.journal.add("end", rule.id, rule.name, sensor.id, seconds=0.0, t=t)
@@ -1649,22 +1740,23 @@ LOGIN_PAGE = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Whenever</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <h1>Whenever</h1>
-    <p>Point at it, say it, or show it. Your camera runs it.</p>
-  </header>
-  <main class="login">
-    <form id="login">
-      <label for="code">Access code</label>
-      <input id="code" type="password" autocomplete="current-password" required>
-      <div class="form-row"><button type="submit">Open Whenever</button></div>
-      <p id="note" class="note">This demo spends real model credit, so it needs the code from the submission.</p>
-    </form>
+  <main class="screens">
+    <div class="start">
+      <p class="brand-line"><span class="brand-mark" aria-hidden="true"></span>Whenever</p>
+      <h1 class="start-title">Whenever it happens, do whatever you want.</h1>
+      <p class="lede">This is the live demo of Whenever. It spends real model credit, so it needs the access code from the submission.</p>
+      <form id="login" class="builder">
+        <label class="connector" for="code">Access code</label>
+        <div class="slot-text"><input id="code" type="password" autocomplete="current-password" required></div>
+        <div class="form-row"><button type="submit" class="pill-button big">Open Whenever</button></div>
+        <p id="note" class="note" role="status"></p>
+      </form>
+    </div>
   </main>
   <script>
     document.getElementById("login").addEventListener("submit", async (event) => {
@@ -1799,7 +1891,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._logged_in():
             if path in ("/", "/index.html"):
                 return self._send(200, LOGIN_PAGE.encode(), "text/html; charset=utf-8")
-            if path != "/style.css":
+            if path not in ("/style.css", "/fonts/schibsted-grotesk.woff2"):
                 return self._json(401, {"error": "Log in first."})
         if path == "/api/state":
             params = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
@@ -1810,6 +1902,13 @@ class Handler(BaseHTTPRequestHandler):
             if not picture:
                 return self._send(204, b"", "image/jpeg")
             return self._send(200, picture[1], "image/jpeg", [("X-Seq", str(picture[0]))])
+        if path == "/api/journal":
+            params = {k: unquote(v) for k, v in (part.split("=", 1) for part in query.split("&") if "=" in part)}
+            since = float(params["since"]) if params.get("since") else None
+            until = float(params["until"]) if params.get("until") else None
+            rows = self.app.journal.history(params.get("kind") or None, None, params.get("rule") or None,
+                                            since, until, int(params.get("limit") or 300))
+            return self._json(200, {"rows": rows})
         if path.startswith("/api/job/"):
             job = self.app.jobs.get(path.rsplit("/", 1)[1])
             return self._json(200 if job else 404, job or {"error": "Not found."})
@@ -1932,6 +2031,20 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(raw)
                 self.app.evidence.label(str(body.get("check"))[:20], str(body.get("label"))[:40])
                 return self._json(200, {"saved": True})
+            if self.path == "/api/phone/topic":
+                return self._json(200, {"topic": self.app.phone_topic()})
+            if self.path == "/api/phone/paired":
+                paired = json.loads(self._read(MAX_LABEL_BYTES) or b"{}").get("paired")
+                return self._json(200, {"paired": self.app.set_paired(paired)})
+            if self.path == "/api/understand":
+                sentence = str(json.loads(self._read(MAX_SENTENCE * 4) or b"{}").get("sentence") or "").strip()
+                if not sentence:
+                    return self._json(400, {"error": "Write what should happen first."})
+                return self._json(200, self.app.understand(sentence[:MAX_SENTENCE]))
+            if self.path.startswith("/api/saved-action/") and self.path.endswith("/test"):
+                name = unquote(self.path.split("/")[3])
+                inputs = json.loads(self._read(MAX_LABEL_BYTES * 4) or b"{}").get("inputs") or {}
+                return self._json(200, self.app.test_action(name, inputs))
             if self.path == "/api/action/draft":
                 raw = self._read(MAX_ACTION_WORDS * 4)
                 if raw is None:
@@ -1970,7 +2083,7 @@ def main():
     if not ENV_FILE.exists() or not ENV_FILE.read_text().strip():
         sys.exit(f"Add your Meta API key to {ENV_FILE}")
     Handler.app = App(Client(load_key(ENV_FILE)), journal=Journal(JOURNAL_FILE),
-                      connectors=Connectors(ACTIONS_FILE), rules_file=RULES_FILE)
+                      connectors=Connectors(ACTIONS_FILE), rules_file=RULES_FILE, phone_file=PHONE_FILE)
     Handler.access = Access()
     if Handler.access.needed():
         print("The page asks for the access code in access.env.", flush=True)

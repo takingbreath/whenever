@@ -11,7 +11,7 @@ from pathlib import PurePosixPath
 
 import sandbox
 from engine import pick_frames, spread
-from meta_api import WRITER, ApiError, _output_text, wonder_cost
+from meta_api import SPARK, WRITER, ApiError, _output_text, spark_cost, wonder_cost
 
 MAX_TURNS = 28
 MAX_REVIEW_ROUNDS = 3
@@ -826,3 +826,47 @@ def write_action(client, words, taken=()):
     draft = json.loads(_output_text(data))
     draft["headers"] = {item["name"]: item["value"] for item in draft.get("headers") or []}
     return draft, wonder_cost(data.get("usage") or {})
+
+
+UNDERSTAND_PROMPT = """\
+A person wrote a rule for a camera system in plain words. Say back, in plain short words, how the
+system will understand it, before an AI spends money writing the code.
+
+- when: the trigger, starting with "When" or "Every", in at most 14 words.
+- then: every thing the person asked the rule to do, one short phrase each, such as "Alert your phone
+  with a picture" or "Keep a record for reports". Leave nothing out. These are built in and need no
+  action: showing a result on the page, speaking on the computer, keeping a record, and turning a listed
+  camera's light on or off or turning its moving lens, when the camera list says that camera can.
+  Anything else outside the page needs one of the listed actions.
+- watch: the camera names it will watch, from the list. Use all of them when the words name none. Use
+  [] for a rule that only runs on a schedule.
+- missing: if the words ask for something outside the page that no listed action can do, one sentence
+  that names it, such as "No action can turn off the lamp." Otherwise "".
+- question: if the words are too vague to build, one short question that would fix it. Otherwise "".
+"""
+
+UNDERSTAND_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["when", "then", "watch", "missing", "question"],
+    "properties": {
+        "when": {"type": "string"}, "then": {"type": "array", "items": {"type": "string"}},
+        "watch": {"type": "array", "items": {"type": "string"}},
+        "missing": {"type": "string"}, "question": {"type": "string"},
+    },
+}
+
+
+def understand(client, sentence, actions="", cameras=""):
+    """Spark restates a rule as When and Then for the person to check. Returns (summary, cost in USD)."""
+    data = json.loads(client._post({
+        "model": SPARK, "instructions": UNDERSTAND_PROMPT, "max_output_tokens": 3000,
+        "reasoning": {"effort": "minimal"},
+        "input": (f"The rule: {sentence}\nCameras:\n{cameras or '- This camera'}\n"
+                  f"Actions:\n{actions or '- none yet'}"),
+        "text": {"format": {"type": "json_schema", "name": "understand", "strict": True, "schema": UNDERSTAND_SCHEMA}},
+    }, timeout=60, retries=2))
+    text = _output_text(data)
+    if not text:
+        # Spark can spend its whole budget thinking, even at minimal effort.
+        raise WriterError("Spark did not finish reading the words. Try once more.")
+    return json.loads(text), spark_cost(data.get("usage") or {})

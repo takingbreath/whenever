@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0}
+body{width:390px;height:844px;overflow:hidden;background:#FBFAF6;font-family:'Public Sans',sans-serif;color:#1E2F7A}
+.bar{height:64px;background:#8E2A2A;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 18px}
+.brand{font-weight:800;font-size:22px;letter-spacing:.02em}
+.date{font-size:13px;opacity:.9}
+h1{font-weight:800;font-size:30px;padding:20px 18px 2px;color:#2a2320}
+.sub{font-size:14px;color:#6b6259;padding:0 18px 14px}
+.head{display:grid;grid-template-columns:58px 1fr 76px;gap:10px;padding:8px 18px;border-top:2px solid #8E2A2A;border-bottom:1px solid #3E64B8;font-size:12px;font-weight:600;letter-spacing:.08em;color:#8E2A2A}
+.row{position:relative;display:grid;grid-template-columns:58px 1fr 76px;gap:10px;padding:14px 18px;border-bottom:1px solid rgba(62,100,184,.45);align-items:center}
+.t{font-weight:800;font-size:18px}
+.what{font-size:17px;font-weight:600;line-height:1.25;color:#1E2F7A}
+.cam{font-size:13px;color:#6b6259;margin-top:3px}
+.thumb{width:76px;height:52px;border-radius:4px;background:#2c3440;position:relative;overflow:hidden}
+.thumb:after{content:"";position:absolute;left:14px;bottom:8px;width:40px;height:16px;border-radius:4px;background:#e9ecef}
+.stamp{position:absolute;right:100px;top:10px;transform:rotate(-8deg);border:2.5px solid #6B4FA0;color:#6B4FA0;border-radius:6px;padding:2px 8px;font-weight:800;font-size:15px;letter-spacing:.1em;opacity:.85}
+.tabs{position:absolute;bottom:0;left:0;right:0;height:78px;background:#fff;border-top:1px solid #e6e1d8;display:flex;justify-content:space-around;align-items:center;padding-bottom:12px}
+.tab{font-size:12px;color:#6b6259;text-align:center;width:64px}
+.tab b{display:block;width:22px;height:22px;margin:0 auto 4px;border:2px solid #6b6259;border-radius:6px}
+.tab.on{color:#8E2A2A}.tab.on b{border-color:#8E2A2A;background:#8E2A2A}
+.plus{width:56px;height:56px;border-radius:50%;background:#8E2A2A;color:#fff;font-size:32px;display:flex;align-items:center;justify-content:center;margin-top:-26px}
+</style></head><body>
+<div class="bar"><span class="brand">Whenever</span><span class="date">Tue 3 Nov</span></div>
+<h1>Register</h1>
+<p class="sub">Everything your Whenevers saw today</p>
+<div class="head"><span>TIME</span><span>WHAT HAPPENED</span><span>PROOF</span></div>
+<div class="row"><span class="t">11:57</span><div><p class="what">Car parked in the driveway</p><p class="cam">Driveway · Phone, Webhook</p></div><span class="thumb"></span><span class="stamp">CHECKED</span></div>
+<div class="row"><span class="t">11:54</span><div><p class="what">Busy hours report sent</p><p class="cam">Schedule · Phone</p></div><span class="thumb" style="background:#e8e2d6"></span></div>
+<div class="row"><span class="t">11:40</span><div><p class="what">Table 4 waited 6 min</p><p class="cam">Café floor · Phone</p></div><span class="thumb"></span><span class="stamp">CHECKED</span></div>
+<div class="row"><span class="t">10:12</span><div><p class="what">White car at the gate</p><p class="cam">Gate wide · Gate light</p></div><span class="thumb"></span></div>
+<div class="row"><span class="t">09:03</span><div><p class="what">Parcel left at the door</p><p class="cam">Side · Phone</p></div><span class="thumb"></span><span class="stamp">CHECKED</span></div>
+<div class="tabs"><span class="tab"><b></b>Live</span><span class="tab"><b></b>Whenevers</span><span class="plus">+</span><span class="tab on"><b></b>Register</span><span class="tab"><b></b>Actions</span></div>
+</body></html>

@@ -234,19 +234,19 @@ class Connectors:
             self._save()
         return len(self.items) < before
 
-    def run(self, name, inputs=None, picture=None):
-        return self.send(self.get(name), inputs, picture)
+    def run(self, name, inputs=None, picture=None, click=None):
+        return self.send(self.get(name), inputs, picture, click)
 
-    def alert(self, text, picture=None):
+    def alert(self, text, picture=None, click=None):
         """ctx.notify reaches every ready action that takes alerts, such as the phone."""
         done = []
         for action in self.ready():
             if action["alerts"]:
-                done.append((action["name"], self.send(action, {"text": text}, picture)))
+                done.append((action["name"], self.send(action, {"text": text}, picture, click)))
         return done
 
-    def send(self, action, inputs=None, picture=None):
-        """Sends one request. Returns ok, status and the start of the reply."""
+    def send(self, action, inputs=None, picture=None, click=None):
+        """Sends one request. click is a page that a phone alert opens when the person taps it."""
         secrets = read_secrets(self.secrets_path)
         missing = self.missing(action, secrets)
         if missing:
@@ -258,7 +258,7 @@ class Connectors:
         if picture is not None and len(picture) > MAX_PICTURE_BYTES:
             raise ActionError("The picture is too large to send.")
         if action["kind"] == "phone":
-            request = self._phone(action, inputs, secrets, picture)
+            request = self._phone(action, inputs, secrets, picture, click)
         else:
             request = self._web(action, inputs, secrets)
         host = urllib.parse.urlsplit(request.full_url).hostname
@@ -277,10 +277,12 @@ class Connectors:
                 text = text.replace(value, "***")
         return {"ok": 200 <= status < 300, "status": status, "reply": text[:MAX_REPLY_CHARS]}
 
-    def _phone(self, action, inputs, secrets, picture):
+    def _phone(self, action, inputs, secrets, picture, click=None):
         url = fill_text(action["url"], {}, secrets)
         text = str(inputs.get("text") or "Whenever").strip()[:MAX_VALUE_CHARS]
         headers = {"Title": header_text(inputs.get("title") or "Whenever")}
+        if click and str(click).startswith("https://"):
+            headers["Click"] = str(click)
         if picture is None:
             return urllib.request.Request(url, data=text.encode(), headers=headers, method="POST")
         headers.update({"Message": header_text(text), "Filename": "picture.jpg"})
