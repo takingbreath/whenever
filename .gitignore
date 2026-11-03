@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+.DS_Store
+experiments/audio/real/
+/rules/
+/logs/
+vendor/
+camera.env
+ezviz_token.json
+.ezviz/
+camera.rtsp.env
+ezviz_open.env

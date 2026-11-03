@@ -1,0 +1,150 @@
+[
+ {
+  "name": "count_every_5th",
+  "seconds": 4.8,
+  "tokens": [
+   480,
+   799
+  ],
+  "code": "def on_end(sensor, t, duration, state, api):\n    if sensor != \"drink_water\":\n        return\n    count = state.get(\"count\", 0) + 1\n    state[\"count\"] = count\n    if count % 5 == 0:\n        api.say(\"You have drunk water \" + str(count) + \" times.\")",
+  "sensors": [
+   {
+    "id": "drink_water",
+    "kind": "see",
+    "look_for": "person drinking water",
+    "question": "Is the person drinking water right now?"
+   }
+  ]
+ },
+ {
+  "name": "count_to_three",
+  "seconds": 6.6,
+  "tokens": [
+   476,
+   1116
+  ],
+  "code": "def on_end(sensor, t, duration, state, api):\n    if sensor != \"whistle\":\n        return\n    if duration < 0.3:\n        return\n    state.setdefault(\"count\", 0)\n    last = state.get(\"last\", None)\n    if last is None or t - last > 300:\n        count = 1\n    else:\n        count = state[\"count\"] + 1\n    state[\"last\"] = t\n    if count >= 3:\n        api.notify(\"Pressure cooker has whistled 3 times.\")\n        state[\"count\"] = 0\n    else:\n        state[\"count\"] = count",
+  "sensors": [
+   {
+    "id": "whistle",
+    "kind": "hear_sound",
+    "look_for": "pressure cooker whistle sound",
+    "question": "Is a pressure cooker whistle sounding right now?"
+   }
+  ]
+ },
+ {
+  "name": "long_sit",
+  "seconds": 5.9,
+  "tokens": [
+   484,
+   960
+  ],
+  "code": "def on_event(sensor, t, state, api):\n    if sensor == \"seated\":\n        state[\"start\"] = t\n        state[\"notified\"] = False\n\ndef on_end(sensor, t, duration, state, api):\n    if sensor == \"seated\":\n        state[\"start\"] = None\n        state[\"notified\"] = False\n\ndef on_tick(t, state, api):\n    state.setdefault(\"start\", None)\n    state.setdefault(\"notified\", False)\n    start = state[\"start\"]\n    if start is None:\n        return\n    if state[\"notified\"]:\n        return\n    if t - start > 3000:\n        api.notify(\"You have been seated for more than 50 minutes - take a break!\")\n        api.say(\"You have been seated for more than 50 minutes, please take a break.\")\n        state[\"notified\"] = True",
+  "sensors": [
+   {
+    "id": "seated",
+    "kind": "see",
+    "look_for": "person seated at desk",
+    "question": "Is a person currently seated at a desk in view?"
+   }
+  ]
+ },
+ {
+  "name": "sight_then_sound",
+  "seconds": 9.2,
+  "tokens": [
+   480,
+   1717
+  ],
+  "code": "def on_event(sensor, t, state, api):\n    if sensor == \"cup\":\n        state[\"last_cup\"] = t\n        state[\"greeted\"] = False\n    if sensor == \"bell\":\n        last = state.get(\"last_cup\", -1000000000.0)\n        if t - last <= 10 and not state.get(\"greeted\", False):\n            api.say(\"hello\")\n            state[\"greeted\"] = True",
+  "sensors": [
+   {
+    "id": "cup",
+    "kind": "see",
+    "look_for": "red cup lifted in the air off the surface",
+    "question": "Is the red cup lifted right now?"
+   },
+   {
+    "id": "bell",
+    "kind": "hear_sound",
+    "look_for": "bell ringing",
+    "question": "Is a bell ringing right now?"
+   }
+  ]
+ },
+ {
+  "name": "customer_wait",
+  "seconds": 5.7,
+  "tokens": [
+   481,
+   1054
+  ],
+  "code": "def on_event(sensor, t, state, api):\n    if sensor == \"customer_at_counter\":\n        state[\"present\"] = True\n        state[\"start\"] = t\n        state[\"notified\"] = False\n\ndef on_end(sensor, t, duration, state, api):\n    if sensor == \"customer_at_counter\":\n        state[\"present\"] = False\n        state[\"start\"] = None\n        state[\"notified\"] = False\n\ndef on_tick(t, state, api):\n    if state.get(\"present\") and not state.get(\"notified\"):\n        start = state.get(\"start\")\n        if start is not None and t - start > 180:\n            state[\"notified\"] = True\n            api.notify(\"Customer waiting at counter for more than 3 minutes - manager assistance needed.\")",
+  "sensors": [
+   {
+    "id": "customer_at_counter",
+    "kind": "see",
+    "look_for": "a customer waiting at the service counter",
+    "question": "Is a customer waiting at the counter right now?"
+   }
+  ]
+ },
+ {
+  "name": "missing_step",
+  "seconds": 6.1,
+  "tokens": [
+   477,
+   1144
+  ],
+  "code": "def on_event(sensor, t, state, api):\n    state.setdefault('manual_seen', False)\n    if sensor == 'manual_in_box':\n        state['manual_seen'] = True\n    if sensor == 'sealing_package':\n        if not state.get('manual_seen', False):\n            api.notify('Warning: package sealed without manual inside')\n\ndef on_end(sensor, t, duration, state, api):\n    state.setdefault('manual_seen', False)\n    if sensor == 'sealing_package':\n        state['manual_seen'] = False",
+  "sensors": [
+   {
+    "id": "sealing_package",
+    "kind": "see",
+    "look_for": "a person sealing a cardboard box or package with tape or closing flaps",
+    "question": "Is someone currently sealing a package or box?"
+   },
+   {
+    "id": "manual_in_box",
+    "kind": "see",
+    "look_for": "instruction manual booklet inside an open package or box",
+    "question": "Is a manual booklet visible inside an open package right now?"
+   }
+  ]
+ },
+ {
+  "name": "rate_window",
+  "seconds": 6.3,
+  "tokens": [
+   481,
+   1239
+  ],
+  "code": "def on_event(sensor, t, state, api):\n    if sensor != \"phone_in_hand\":\n        return\n    times = state.setdefault(\"times\", [])\n    times.append(t)\n    kept = []\n    for x in times:\n        if t - x <= 600:\n            kept.append(x)\n    state[\"times\"] = kept\n    if len(kept) > 5:\n        if not state.get(\"alerting\"):\n            state[\"alerting\"] = True\n            api.notify(\"You picked up your phone more than 5 times in 10 minutes.\")\n    else:\n        state[\"alerting\"] = False\n\ndef on_tick(t, state, api):\n    times = state.get(\"times\", [])\n    if not times:\n        return\n    kept = []\n    for x in times:\n        if t - x <= 600:\n            kept.append(x)\n    state[\"times\"] = kept\n    if len(kept) <= 5:\n        state[\"alerting\"] = False",
+  "sensors": [
+   {
+    "id": "phone_in_hand",
+    "kind": "see",
+    "look_for": "a phone held in a person's hand",
+    "question": "Is a phone currently held in a person's hand?"
+   }
+  ]
+ },
+ {
+  "name": "time_of_day",
+  "seconds": 8.4,
+  "tokens": [
+   481,
+   1601
+  ],
+  "code": "def on_event(sensor, t, state, api):\n    if sensor == \"door_open\":\n        state[\"open\"] = True\n        state[\"open_since\"] = t\n        state[\"notified\"] = False\n\ndef on_end(sensor, t, duration, state, api):\n    if sensor == \"door_open\":\n        state[\"open\"] = False\n        state[\"notified\"] = False\n\ndef on_tick(t, state, api):\n    if not state.get(\"open\"):\n        return\n    tod = t % 86400\n    if tod < 79200:\n        return\n    if state.get(\"notified\"):\n        return\n    open_since = state.get(\"open_since\", t)\n    day_start = t - tod\n    ten_pm = day_start + 79200\n    effective = open_since\n    if effective < ten_pm:\n        effective = ten_pm\n    if t - effective > 300:\n        state[\"notified\"] = True\n        api.notify(\"Door has been open for more than 5 minutes after 10 pm.\")",
+  "sensors": [
+   {
+    "id": "door_open",
+    "kind": "see",
+    "look_for": "an open door",
+    "question": "Is a door open right now?"
+   }
+  ]
+ }
+]

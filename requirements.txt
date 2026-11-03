@@ -1,0 +1,3 @@
+meta_sam_parser==0.1.0
+websockets
+Pillow
