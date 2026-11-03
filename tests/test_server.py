@@ -1726,7 +1726,8 @@ class Editing(TempLogs):
         self.calls = []
 
     def run_edit(self, result=None, error=None, **kwargs):
-        def write(client, folder, sentence, example, idle, progress, motions, gap_s, pointed, previous, cameras):
+        def write(client, folder, sentence, example, idle, progress, motions, gap_s, pointed, previous, cameras,
+                  actions="", journal=""):
             self.calls.append({"sentence": sentence, "pointed": pointed, "previous": previous, "folder": folder,
                                "example": example})
             if error:

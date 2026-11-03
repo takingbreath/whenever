@@ -103,6 +103,28 @@ The page has a row for this: arrows, **Click to aim** and the light. After **Cli
 
 The lens also follows people by itself, so it can leave the point that a rule aimed at. Frames from a new view start about 6 s later, because the lens takes about 2 s to arrive and the video comes about 4 s late. So a rule aims at a thing that stays, or lets the camera follow a person.
 
+## Actions: reach anything outside the camera
+
+A rule's code has no network. It names an action, and the server sends the request.
+
+- **Phone:** `ctx.notify(text, picture)` also goes to your phone through [ntfy](https://ntfy.sh). Put `NTFY_TOPIC=<a long random name>` in `actions.env`, and follow that topic in the ntfy app. `ctx.act("Phone", text=..., picture=frame)` sends one on purpose.
+- **Any web request:** under **Actions** on the page, describe the action in plain words, such as "Turn my desk lamp on or off. It is Hue light 3." You can paste docs or an example request. Wonder writes one request with blanks: `{on}` for an input, and `{secret:HUE_USER}` for a key. You check the request, press **Test it**, and save it. Then any new rule can call `ctx.act("Desk lamp", on=False)`.
+
+The same safety rules hold:
+
+- A key stays in `actions.env`, which Git ignores. It never reaches rule code, Wonder or the page, and it is hidden in any reply.
+- An action reaches only the host that you saved. It follows no redirect, and its host has no blanks.
+- A rule can run 12 actions a minute.
+- With `WHENEVER_PUBLIC=1`, as on a hosted server, an action reaches only public `https` hosts.
+
+## Journal and reports
+
+The server writes everything into one journal, `data/journal.db`: each event and how long it lasted, each action, each notification, and each fact that a rule records with `ctx.record("waited", table="4", seconds=312)`. The journal belongs to you, not to one rule, and it stays across restarts.
+
+A report is a rule with a **schedule**, such as "Every Monday at 9 AM, send my phone the busy hours of last week." A schedule fires with no camera. The rule reads `ctx.history(...)`, does the arithmetic, draws a chart and sends it. So no rule needs its own report code, and one report can use what all your rules saw. Schedules use your own clock. A hosted server sets `WHENEVER_TZ`, such as `Asia/Kolkata`.
+
+Live rules return after a restart, with their saved values. The list is in `data/rules.json`.
+
 ## Pictures
 
 `ctx.gallery("face")` finds a thing across frames and shows a row of zoomed pictures, the best first. A click opens the full frame from that camera, with the thing marked. Zoom uses real pixels only. It does not use AI to add detail, because that can invent a face or a number plate. Rule code calls a picture clear only after `ctx.check` passes on that frame.
@@ -131,7 +153,11 @@ Click **Edit** on a rule, change its words, and click **Update rule**. Wonder ge
 | `ctx.aim(camera, thing, x, y, frame)` | Turns a moving lens to a thing that SAM finds in the fixed lens, or to a point there |
 | `ctx.move(camera, direction, seconds)` | Turns a moving lens left, right, up or down |
 | `ctx.light(camera, on, seconds)` | Turns a camera's light on or off. It turns off by itself after 60 s at most |
-| `ctx.notify`, `ctx.say`, `ctx.show`, `ctx.log` | Other outputs |
+| `ctx.act(name, picture, **inputs)` | Runs one of your actions, such as the phone or a lamp |
+| `ctx.record(name, **values)` | Adds a measured fact to the journal |
+| `ctx.history(kind, name, rule, since, until)` | Reads the journal of all your rules |
+| `ctx.notify(text, picture)` | Shows an alert, and sends it to your phone |
+| `ctx.say`, `ctx.show`, `ctx.log` | Other outputs |
 | Any Python library | Pixel work, statistics, charts and files |
 
 For example, Wonder can write a rule that asks Spark what an object is, checks the confidence, and asks Wonder for a second opinion if the answer is weak. Another rule can see that a face is out of view, wake a second sensor, wait for the face to return, and save that frame. The confidence is the model's own estimate, not a measured accuracy.
@@ -160,13 +186,26 @@ Both models accept video. We measured them on 2-second clips at 10 frames per se
 - The server listens on this Mac only.
 - The API key stays in the server. Rule code cannot read it.
 - Each rule runs in its own sandbox. It can write only in its folder and cannot read your home folder.
-- Rule code has no network, except while pip installs libraries. So a rule's actions stay on this Mac, and on the cameras that `camera.env` lists, for now.
+- Rule code has no network, except while pip installs libraries. A rule reaches the world only through the cameras in `camera.env` and the actions that you saved.
 - A rule can make 60 model calls a minute. Every frame in the session stays available to it.
 - Frames go to Meta's API in Standard mode. Audio goes to Meta's API only while the talk key is held.
 - Development mode saves every frame and model answer in `logs/`, on this Mac. The oldest pictures go first when a run reaches 20 GB. This folder is not in the repo.
-- The server stops calling the API at an estimated spend of $5. Restart it to continue. This estimate does not include voice.
+- The server stops calling the API at an estimated spend of $5 a day. This estimate does not include voice.
 - A draw works on the frames that a rule already saw. It does not follow an object live.
-- Rules do not return after a server restart. Their folders stay in `rules/`.
+- A schedule that comes while the server is off is skipped. The next one runs.
+- Up to 5 rules run at once.
+
+## Host it on a Linux server
+
+The `deploy` folder holds a systemd unit, a Caddy site and a deploy script. The server runs Whenever as its own user, `whenever`, in `/srv/whenever`, behind Caddy, which adds HTTPS. The browser camera works only over HTTPS.
+
+- **Login:** a hosted page asks for the access code in `access.env`. The code is a file, not an environment value, so rule code cannot read it from the server's process.
+- **Spend:** the daily limit is `WHENEVER_SPEND_LIMIT`, $5 by default. It starts again at midnight in `WHENEVER_TZ`.
+- **Rule code:** on Linux, `jail.py` locks each rule's process with Landlock and seccomp. It can write only in its folder, it can read only the system folders, and it has no internet socket. Neither needs root or a change to the host.
+- **Service:** the systemd unit hides every home folder from the service and lets it write only in `/srv/whenever`.
+- **Cameras:** your home cameras stay at home. Visitors use their own browser camera, or the test clip at `/?clip=1`.
+
+To send a new version, run `deploy/deploy.sh <ssh host>` from this folder. It copies only the files that Git would publish.
 
 ## Test
 

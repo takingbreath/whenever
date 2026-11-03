@@ -53,6 +53,9 @@ def copy_rule(source, rule_id):
 
 
 def wrap(folder, argv, network=False):
+    if sys.platform != "darwin":
+        # Linux: Landlock and seccomp, which need no root and no change to the host.
+        return [sys.executable, str(ROOT / "jail.py"), str(Path(folder).resolve()), "1" if network else "0", "--", *argv]
     profile = PROFILE.format(
         network="" if network else "(deny network*)", home=HOME, folder=Path(folder).resolve()
     )
@@ -69,6 +72,8 @@ def environment(folder):
         "PYTHONDONTWRITEBYTECODE": "1",
         "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         "MPLBACKEND": "Agg",
+        # The person's own clock, so datetime.fromtimestamp gives their hours on a hosted server.
+        **({"TZ": os.environ["WHENEVER_TZ"]} if os.environ.get("WHENEVER_TZ") else {}),
     }
 
 
@@ -91,6 +96,8 @@ def install(folder, packages):
 
 
 def start_worker(folder):
+    # A rule that returns after a restart gets the newest runtime, with any fix since it was written.
+    shutil.copy(ROOT / "rule_runtime.py", Path(folder) / "rule_runtime.py")
     return subprocess.Popen(
         wrap(folder, ["python", "rule_runtime.py"]), cwd=folder, env=environment(folder),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,

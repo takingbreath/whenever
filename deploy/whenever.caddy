@@ -1,0 +1,12 @@
+# Caddy site for Whenever. Copy it to /etc/caddy/whenever.caddy, put your host name in place of
+# HOST, and add the line "import whenever.caddy" to the end of /etc/caddy/Caddyfile.
+# Caddy gets the HTTPS certificate by itself. The browser camera works only over HTTPS.
+
+HOST {
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        Referrer-Policy "no-referrer"
+        -Server
+    }
+    reverse_proxy 127.0.0.1:8787
+}

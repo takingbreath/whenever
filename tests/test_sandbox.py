@@ -125,6 +125,41 @@ class Blocks(unittest.TestCase):
         self.assertFalse([m for m in seen if m["do"] == "error"])
 
 
+OUTPUT_RULE = """
+def on_event(sensor, t, ctx):
+    past = ctx.history(kind="end", name="seated", rule="Tables")
+    result = ctx.act("Phone", text=f"{len(past)} tables", title="Report")
+    ctx.record("report", tables=len(past), ok=result["ok"])
+    ctx.notify("Sent")
+"""
+
+
+class OutputBlocks(unittest.TestCase):
+    def test_actions_and_the_journal_pass_their_name_through_the_worker(self):
+        folder = sandbox.create("test-" + uuid.uuid4().hex[:6])
+        self.addCleanup(shutil.rmtree, folder)
+        (folder / "rule.py").write_text(OUTPUT_RULE)
+        worker = Worker(self, folder)
+        worker.send({"type": "on", "sensor": "weekly", "t": 1.0, "event": {"note": "It is time."}})
+        seen = []
+        while not seen or seen[-1]["do"] != "done":
+            message = worker.read()
+            seen.append(message)
+            if message["do"] == "call" and message["name"] == "history":
+                worker.send({"type": "reply", "id": message["id"], "value": [{"t": 1.0}, {"t": 2.0}]})
+            elif message["do"] == "call":
+                worker.send({"type": "reply", "id": message["id"], "value": {"ok": True, "status": 200, "reply": ""}})
+        calls = [(m["name"], m["args"]) for m in seen if m["do"] == "call"]
+        self.assertEqual(calls[0], ("history", {"kind": "end", "name": "seated", "rule_name": "Tables",
+                                                "since": None, "until": None, "limit": 2000}))
+        self.assertEqual(calls[1][0], "act")
+        self.assertEqual(calls[1][1]["name"], "Phone")
+        self.assertEqual(calls[1][1]["inputs"], {"text": "2 tables", "title": "Report"})
+        self.assertIn({"do": "record", "name": "report", "values": {"tables": 2, "ok": True}}, seen)
+        self.assertIn({"do": "notify", "text": "Sent"}, seen)
+        self.assertFalse([m for m in seen if m["do"] == "error"])
+
+
 class CameraBlocks(unittest.TestCase):
     def test_a_test_records_each_camera_block_and_touches_no_camera(self):
         ctx = rule_runtime.Context()
@@ -170,7 +205,8 @@ class Sandbox(unittest.TestCase):
             self.skipTest("There is no .env to protect.")
         code, output = sandbox.run(self.folder, "cat ../../.env")
         self.assertNotEqual(code, 0)
-        self.assertIn("Operation not permitted", output)
+        # macOS says "Operation not permitted". Landlock on Linux says "Permission denied".
+        self.assertRegex(output, "Operation not permitted|Permission denied")
 
     def test_cannot_write_outside_its_folder(self):
         code, _ = sandbox.run(self.folder, "touch ../outside.txt")

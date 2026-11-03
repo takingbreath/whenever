@@ -139,8 +139,9 @@ Write rule.py with any of these functions:
 
 t is Unix time in seconds. The sensors are already cleaned, so one odd frame does not reach you.
 
-ctx.state is a dict that is saved between calls. Keep JSON values in it.
-ctx.notify(text) shows a notification. ctx.say(text) speaks.
+ctx.state is a dict that is saved between calls, and across server restarts. Keep JSON values in it.
+ctx.notify(text, picture=None) shows a notification. It also reaches the person's phone when they
+have a phone action, with the picture if you pass a Frame. ctx.say(text) speaks.
 ctx.show(name, value) shows a live value on the page. Use it for any number a person may want to see.
 ctx.log(text) adds a line to the event list.
 ctx.folder is your folder. Files you write there stay.
@@ -223,6 +224,34 @@ another frame, and target to outline another thing.
 ctx.image(picture, caption="") shows a Frame, or any .jpg or .png file in your folder, in the event
 list. Use it for a saved photo, a crop or a chart.
 
+ACTIONS reach the world outside your folder, such as a phone, a light or any web service. The request
+lists the person's actions and their inputs. ctx.act(name, picture=None, **inputs) runs one, such as
+ctx.act("Lamp", on=False) or ctx.act("Phone", text="A car blocks the gate", picture=ctx.event.proof).
+picture is a Frame or a .jpg or .png in your folder, for an action that can attach one. It returns a
+dict with ok, status and reply, and raises ModelError if the action cannot run, so catch it. A rule
+can run 12 actions a minute. Use an action only when the person asks for what it does. If the request
+needs an action that is not listed, call finish with unsupported "No action can <what is needed>.
+Add one under Actions."
+
+SCHEDULES are triggers at a time, with no camera. Use one when the person asks for something at a time
+or on a repeat, such as "every Monday at 9 AM, send me a report" or "every 10 minutes". Each has id,
+every_minutes (at least 1), at ("HH:MM" in the person's own time, or "" to repeat every_minutes) and
+days (such as ["mon"], or [] for every day). When it fires, on_event(schedule_id, t, ctx) runs, and
+ctx.event has no frames. A rule can have only schedules and no sensors.
+
+THE JOURNAL is one record of what every rule of this person saw and did, kept across restarts. It is
+not only this rule's record. ctx.history(kind=None, name=None, rule=None, since=None, until=None,
+limit=2000) reads it, oldest first. Each item is a dict with t, rule (a rule's name), kind, name,
+seconds, text and values. Kinds: "event" (a sensor or schedule fired, and name is its id), "end" (a
+sensor turned off, and seconds is how long its event lasted), "record", "action", "notify", "draw",
+"image", "log" and "error". The request lists what the journal holds now.
+ctx.record(name, **values) adds a "record" with facts that you measured, such as
+ctx.record("waited", table="4", seconds=312). Record each number that a person may want to count,
+compare or see in a report later, even if this request does not ask for a report.
+A REPORT reads ctx.history, does the arithmetic in Python, draws a chart with any library, saves it as
+a .png in your folder, shows it with ctx.image, and sends it with ctx.notify or ctx.act. Use the
+person's own time for hours and days: datetime.fromtimestamp(t).
+
 Cost and speed: a Spark ask takes 2 to 4 s and costs about $0.002. A Wonder ask takes 5 to 20 s and
 costs about 10 times more, so use it for a second opinion. A find takes about 1 s. A call blocks
 your code, and new events wait for it. A rule can make 30 model calls a minute, so call models
@@ -294,6 +323,11 @@ Test with rule_runtime.py, which is already in your folder. A test has no models
     # ctx.asked is a list of (question, model). ctx.armed holds each armed sensor.
     # ctx.aim, ctx.move and ctx.light add to ctx.actions, such as {"do": "aim", "camera": "...", "thing": "car"}.
     # ctx.aim_finds = False makes ctx.aim return None.
+    # ctx.act adds {"do": "act", "name": "Lamp", "inputs": {...}} and returns ok.
+    # ctx.record adds {"do": "record", "name": ..., "values": {...}}.
+    # ctx.past = [{"t": 100.0, "rule": "Gate", "kind": "end", "name": "car", "seconds": 40.0,
+    #              "text": "", "values": {}}] is what ctx.history returns.
+    # A schedule fires like a sensor: ("on", "weekly_report", 100.0).
     # Test frames are real small JPEGs, so library code runs on them.
 
 Work in this order:
@@ -304,8 +338,9 @@ Work in this order:
 4. Fix any failure.
 5. Call finish.
 
-Limits: only the camera works today, so a rule cannot hear. The folder has no network at run time.
-If the request needs sound or a network, call finish with a reason in unsupported.
+Limits: only the camera works today, so a rule cannot hear. The folder has no network at run time,
+so the listed actions are the only way out. If the request needs sound, call finish with a reason in
+unsupported.
 """
 
 TOOLS = [
@@ -338,9 +373,19 @@ TOOLS = [
         "description": "Submit the rule. The tests run again, and sensors are checked on any example.",
         "parameters": {
             "type": "object", "additionalProperties": False,
-            "required": ["name", "sensors", "plan", "unsupported"],
+            "required": ["name", "sensors", "schedules", "plan", "unsupported"],
             "properties": {
                 "name": {"type": "string", "description": "2 to 5 words."},
+                "schedules": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["id", "every_minutes", "at", "days"],
+                    "properties": {
+                        "id": {"type": "string"}, "every_minutes": {"type": "number"},
+                        "at": {"type": "string", "description": "HH:MM, or empty to repeat every_minutes."},
+                        "days": {"type": "array", "items": {
+                            "type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}},
+                    },
+                }},
                 "sensors": {"type": "array", "items": {
                     "type": "object", "additionalProperties": False,
                     "required": ["id", "target", "outline", "starts_off", "question", "requires",
@@ -600,8 +645,16 @@ def handle(call, folder, client, example, idle, progress, motions=None, sentence
     if name == "finish":
         if args["unsupported"]:
             return "", {"unsupported": args["unsupported"]}
-        if not args["sensors"]:
-            return "A rule needs at least one sensor.", None
+        if not args["sensors"] and not args.get("schedules"):
+            return "A rule needs at least one sensor or schedule.", None
+        ids = [s["id"] for s in args["sensors"]] + [s["id"] for s in args.get("schedules") or []]
+        if len(set(ids)) < len(ids):
+            return "Each sensor and schedule needs its own id.", None
+        for item in args.get("schedules") or []:
+            if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", item["at"]) and item["at"]:
+                return f"Schedule {item['id']}: at must be HH:MM, such as 09:00, or empty.", None
+            if not item["at"] and item["every_minutes"] < 1:
+                return f"Schedule {item['id']}: every_minutes must be at least 1.", None
         code, output = sandbox.run(folder, "python test_rule.py")
         if code:
             progress("Final test run failed")
@@ -662,11 +715,13 @@ def describe_previous(previous):
 
 
 def write_rule(client, folder, sentence, example=None, idle=None, progress=lambda text: None,
-               motions=None, gap_s=None, pointed=None, previous=None, cameras=""):
+               motions=None, gap_s=None, pointed=None, previous=None, cameras="", actions="", journal=""):
     """Runs Wonder until the rule passes. Returns (rule fields, cost in USD)."""
     text = f"The person's request: {sentence}"
     if cameras:
         text += f"\nThe cameras on the wall:\n{cameras}"
+    text += f"\nThe person's actions:\n{actions}" if actions else "\nThe person has no actions yet."
+    text += f"\nThe journal holds:\n{journal}" if journal else "\nThe journal is empty so far."
     if pointed:
         text += describe_pointed(pointed)
     if previous:
@@ -710,3 +765,64 @@ def write_rule(client, folder, sentence, example=None, idle=None, progress=lambd
                 return done, cost
             history.append({"type": "function_call_output", "call_id": call["call_id"], "output": output})
     raise WriterError("Wonder did not finish the rule.")
+
+
+ACTION_PROMPT = """\
+You connect a service or a device to a camera rule system. The person describes one action in plain
+words, such as "turn my desk lamp off or on" or "add a row to my sheet". They may also paste docs or an
+example request. Write ONE web request that does the action.
+
+- Each value that changes from call to call is an input. Write it as {input_name} in the url, a header
+  or the body. Give each input a short name in small letters, a description and an example value.
+- Each key, token, password, private id or webhook secret is a secret. Write it as {secret:NAME}, with
+  NAME in capital letters. Never write a real key, even if the person pasted one. The person types
+  each secret into a private file, so describe where they can find it.
+- A json body must be valid JSON. Put each blank inside quotes, such as {"on": "{on}"}. A blank that
+  is the whole string keeps the input's own type, so on can be true or false.
+- The host must be fixed. Never put a blank in the host.
+- Use https, unless the device is on the person's home network.
+- name is 1 to 3 words that a person would say, such as "Desk lamp". description says what it does in
+  one sentence.
+- If you do not know the address of the service and the person did not give it, or the service needs a
+  login that a fixed key cannot give, explain this in unsupported and leave the rest empty.
+"""
+
+ACTION_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["name", "description", "method", "url", "headers", "body_type", "body", "inputs", "secrets",
+                 "unsupported"],
+    "properties": {
+        "name": {"type": "string"}, "description": {"type": "string"},
+        "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+        "url": {"type": "string"},
+        "headers": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False, "required": ["name", "value"],
+            "properties": {"name": {"type": "string"}, "value": {"type": "string"}}}},
+        "body_type": {"type": "string", "enum": ["none", "json", "text"]},
+        "body": {"type": "string"},
+        "inputs": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False, "required": ["name", "description", "example"],
+            "properties": {"name": {"type": "string"}, "description": {"type": "string"},
+                           "example": {"type": "string"}}}},
+        "secrets": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False, "required": ["name", "description"],
+            "properties": {"name": {"type": "string"}, "description": {"type": "string"}}}},
+        "unsupported": {"type": "string"},
+    },
+}
+
+
+def write_action(client, words, taken=()):
+    """Wonder turns the person's words into one web request with blanks. Returns (draft, cost in USD).
+
+    The draft is not trusted. The server checks it, and the person tests it before it is saved.
+    """
+    data = json.loads(client._post({
+        "model": WRITER, "instructions": ACTION_PROMPT, "max_output_tokens": 4000,
+        "reasoning": {"effort": "low"},
+        "input": f"The person's words:\n{words}\nNames already in use: {', '.join(taken) or 'none'}",
+        "text": {"format": {"type": "json_schema", "name": "action", "strict": True, "schema": ACTION_SCHEMA}},
+    }, timeout=120, retries=3))
+    draft = json.loads(_output_text(data))
+    draft["headers"] = {item["name"]: item["value"] for item in draft.get("headers") or []}
+    return draft, wonder_cost(data.get("usage") or {})

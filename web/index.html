@@ -70,10 +70,24 @@
       <h2>Rules</h2>
       <ul id="rules" class="rules"></ul>
 
+      <h2>Actions</h2>
+      <ul id="actions" class="actions"></ul>
+      <form id="action-form" class="action-form">
+        <label for="action-words">Connect an action</label>
+        <textarea id="action-words" rows="2" maxlength="6000"
+          placeholder="Turn my desk lamp on or off. It is Hue light 3 on my home bridge."></textarea>
+        <div class="form-row">
+          <button id="action-add" type="submit">Connect it</button>
+        </div>
+        <p class="hint">Wonder writes the web request. You can paste docs or an example request. Do not paste a key: keys go in actions.env.</p>
+        <div id="action-draft" class="draft" hidden></div>
+        <p id="action-note" class="note"></p>
+      </form>
+
       <h2>Events</h2>
       <ol id="log" class="log"></ol>
 
-      <p class="privacy">Development mode: this app saves every frame and every model answer in the logs folder on this Mac. Frames go to Meta's API when the picture changes, and once every 10 seconds when it does not. Your voice goes to Meta's API only while you hold the talk key. Each rule's code runs in its own locked folder.</p>
+      <p class="privacy">Development mode: this app saves every frame and every model answer in the logs folder of the server that runs it. Frames go to Meta's API when the picture changes, and once every 10 seconds when it does not. Your voice goes to Meta's API only while you hold the talk key. Each rule's code runs in its own locked folder.</p>
     </aside>
   </main>
 

@@ -96,7 +96,8 @@ class Context:
     A test has no models, so it scripts them. Set ctx.answers to a list of (text, confidence),
     ctx.found to the boxes that find returns, ctx.shots to the pictures that gallery returns, and
     ctx.checks to a list of (passed, confidence) with one item for each frame that check judges.
-    Set ctx.aim_finds to False to test a thing that ctx.aim cannot find.
+    Set ctx.aim_finds to False to test a thing that ctx.aim cannot find. Set ctx.past to the
+    journal rows that history returns.
     ctx.asked lists each (question, model), and ctx.armed holds each armed sensor with its seconds.
     """
 
@@ -110,6 +111,7 @@ class Context:
         self.checks = []
         self.shots = []
         self.aim_finds = True
+        self.past = []
         self.asked = []
         self.armed = {}
         self._call = call
@@ -254,8 +256,32 @@ class Context:
         path = picture.path if isinstance(picture, Frame) else str(picture)
         self._record("image", path=path[:200], caption=str(caption)[:200], check=self._check())
 
-    def notify(self, text):
-        self._record("notify", text=str(text)[:300])
+    def act(self, name, picture=None, **inputs):
+        """Runs one of the person's actions, such as "Phone". picture is a Frame or a picture in this
+        folder. Returns a dict with ok, status and reply. A failed action raises ModelError."""
+        path = picture.path if isinstance(picture, Frame) else (str(picture) if picture else None)
+        if not self._call:
+            self._record("act", name=str(name), inputs=dict(inputs), picture=path)
+            return {"ok": True, "status": 200, "reply": ""}
+        return self._call("act", name=str(name)[:40], inputs=inputs, picture=path, check=self._check())
+
+    def record(self, name, **values):
+        """Adds a measured fact to the journal, so a later report can count or compare it."""
+        plain = (str, int, float, bool, type(None))
+        self._record("record", name=str(name)[:60],
+                     values={str(k): v if isinstance(v, plain) else str(v) for k, v in values.items()})
+
+    def history(self, kind=None, name=None, rule=None, since=None, until=None, limit=2000):
+        """Reads the journal of all rules, oldest first. Each item is a dict with t, rule, kind, name,
+        seconds, text and values."""
+        if not self._call:
+            return [dict(item) for item in self.past]
+        return self._call("history", kind=kind, name=name, rule_name=rule, since=since, until=until, limit=int(limit))
+
+    def notify(self, text, picture=None):
+        """Shows an alert, and sends it to the person's phone if they have a phone action."""
+        path = picture.path if isinstance(picture, Frame) else (str(picture) if picture else None)
+        self._record("notify", text=str(text)[:300], picture=path)
 
     def say(self, text):
         self._record("say", text=str(text)[:300])
@@ -344,12 +370,15 @@ def main():
             send(action)
         ctx.actions.clear()
 
-    def call_server(name, **args):
-        """Waits for the server. Other jobs and new events run in the meantime."""
+    def call_server(block, /, **args):
+        """Waits for the server. Other jobs and new events run in the meantime.
+
+        block is positional only, because ctx.act and ctx.history send an argument named name.
+        """
         flush()
         number = next(numbers)
         box = replies[number] = queue.Queue(maxsize=1)
-        send({"do": "call", "id": number, "name": name, "args": args})
+        send({"do": "call", "id": number, "name": block, "args": args})
         turn.release()
         try:
             message = box.get()

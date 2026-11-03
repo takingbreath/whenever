@@ -5,11 +5,10 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import camera
+import camera  # it adds vendor/ to the path, where Pillow is
+from PIL import Image
 
 
 class Address(unittest.TestCase):

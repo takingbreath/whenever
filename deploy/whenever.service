@@ -1,0 +1,41 @@
+# Whenever on a Linux server, as its own user in its own folder.
+# Install: /etc/systemd/system/whenever.service. Settings that are not secret go in
+# /srv/whenever/settings.env, such as WHENEVER_HOST=your.domain and WHENEVER_TZ=Asia/Kolkata.
+# Secrets stay in files in /srv/whenever/app: .env, access.env and actions.env.
+
+[Unit]
+Description=Whenever: plain-English rules for cameras
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=whenever
+Group=whenever
+WorkingDirectory=/srv/whenever/app
+Environment=WHENEVER_PORT=8787
+Environment=WHENEVER_PUBLIC=1
+Environment=WHENEVER_LOGS_GB=5
+EnvironmentFile=-/srv/whenever/settings.env
+ExecStart=/srv/whenever/venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+
+# The service sees no home folder and can write only in /srv/whenever. Each rule's code also runs
+# in jail.py, which keeps it in its own folder with no network.
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/whenever
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=4G
+CPUQuota=200%
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

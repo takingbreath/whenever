@@ -4,6 +4,7 @@ A rule names an action from this list. It can never pass a command.
 """
 
 import subprocess
+import sys
 
 CHIME = "/System/Library/Sounds/Glass.aiff"
 
@@ -17,6 +18,9 @@ NOTIFY_SCRIPT = [
 def run(action):
     kind = action["action"]
     text = action.get("text") or "Rule fired"
+    if sys.platform != "darwin":
+        # A hosted server has no screen or speaker. The page and the phone still get the alert.
+        return
     if kind == "notify":
         subprocess.Popen(["osascript", *NOTIFY_SCRIPT, "--", text])
         subprocess.Popen(["afplay", CHIME])

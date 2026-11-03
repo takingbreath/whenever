@@ -11,3 +11,5 @@ ezviz_token.json
 .ezviz/
 camera.rtsp.env
 ezviz_open.env
+/data/
+actions.env

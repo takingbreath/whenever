@@ -354,8 +354,10 @@ class Sender:
             data = self._post("/api/frame", encode(self.wall.small(wall), 70), {
                 **headers, "X-Frame-Time": str(t), "X-Motion": f"{motion:.1f}"})
             if data.get("inactive"):
-                print("Another page took the camera, so this reader stopped.", flush=True)
-                self.finished.set()
+                # A browser page claims the camera when the server restarts. A security camera
+                # comes first, so the reader takes it back and does not stop.
+                print("A page took the camera, so this reader took it back.", flush=True)
+                self.claim()
             elif data.get("name"):
                 if wall.width > self.wall.frame_width:
                     self._post(f"/api/frame/{data['name']}/sharp", encode(wall, 85), headers)

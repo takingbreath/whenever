@@ -5,6 +5,7 @@ answer. Everything goes to logs/, on this Mac only.
 """
 
 import json
+import os
 import threading
 import time
 import uuid
@@ -13,7 +14,8 @@ from datetime import datetime
 from pathlib import Path
 
 # The oldest pictures go first, so a camera can run for days and the newest footage always stays.
-MAX_BYTES = 20_000_000_000
+# A hosted server keeps less, with WHENEVER_LOGS_GB.
+MAX_BYTES = int(float(os.environ.get("WHENEVER_LOGS_GB") or 20) * 1_000_000_000)
 RECENT_CHECKS = 2000
 
 

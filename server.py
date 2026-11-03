@@ -6,8 +6,11 @@ browser or a rule. Frames stay in memory and are not saved.
 """
 
 import base64
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import shutil
 import sys
 import threading
@@ -15,15 +18,20 @@ import time
 import uuid
 from collections import OrderedDict, deque, namedtuple
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from io import BytesIO
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, unquote
+from zoneinfo import ZoneInfo
 
 import actions
 import sandbox
 import writer
 from camera_control import ControlError, Controls
+from connectors import ACTIONS_FILE, ActionError, Connectors, check_draft
+from journal import JOURNAL_FILE, Journal
 from engine import SensorState, pick_frames, spread
 from evidence import Evidence
 from meta_api import ApiError, Client, load_key
@@ -34,8 +42,26 @@ PORT = int(os.environ.get("WHENEVER_PORT", 8787))
 ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / ".env"
 LOGS_DIR = ROOT / "logs"
+# A hosted server names its public host, such as wheneverwhatever.si. Caddy brings HTTPS traffic here.
+HOSTS = tuple(h.strip() for h in os.environ.get("WHENEVER_HOST", "").split(",") if h.strip())
+# The access code of a hosted server. It is a file, not an environment value, because a rule could
+# read the environment of a process of the same user. With no file, as on a Mac, nobody logs in.
+ACCESS_FILE = ROOT / "access.env"
+SESSIONS_FILE = ROOT / "data" / "sessions.json"
+SESSION_S = 30 * 86_400
+MAX_LOGINS_PER_MINUTE = 10
 
-MAX_RULES = 3
+DATA_DIR = ROOT / "data"
+RULES_FILE = DATA_DIR / "rules.json"
+MAX_RULES = 5
+MAX_SCHEDULES = 4
+MIN_SCHEDULE_S = 60
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+# Schedules use the person's own clock. A hosted server sets WHENEVER_TZ, such as Asia/Kolkata.
+ZONE = ZoneInfo(os.environ["WHENEVER_TZ"]) if os.environ.get("WHENEVER_TZ") else datetime.now().astimezone().tzinfo
+MAX_ACTS_PER_MINUTE = 12
+MAX_ACTION_WORDS = 6_000
+MAX_DRAFTS = 10
 MAX_FRAME_BYTES = 1_000_000
 MAX_SHARP_BYTES = 3_000_000
 MAX_FULL_BYTES = 8_000_000
@@ -116,7 +142,8 @@ FEED_LENGTH = 200
 
 # Estimates from the published prices. Spark and Wonder use the real token counts.
 PRICE_SEE = 0.0025
-SPEND_LIMIT_USD = 5.00
+# The spend limit is for each day, in the person's own time.
+SPEND_LIMIT_USD = float(os.environ.get("WHENEVER_SPEND_LIMIT") or 5.00)
 
 STATIC = {
     "/": ("web/index.html", "text/html; charset=utf-8"),
@@ -264,6 +291,47 @@ class Sensor:
                 "clear_after_s": self.clear_after_s, "min_motion": self.min_motion, "reason": self.reason}
 
 
+def parse_at(text):
+    """"09:30" becomes (9, 30). Anything else is None."""
+    hour, sep, minute = str(text or "").strip().partition(":")
+    if sep and hour.isdigit() and minute.isdigit() and int(hour) < 24 and int(minute) < 60:
+        return int(hour), int(minute)
+    return None
+
+
+class Schedule:
+    """A trigger at a time, with no camera. A report is a rule with a schedule."""
+
+    def __init__(self, fields, now=None):
+        self.id = str(fields["id"])[:40]
+        self.at = parse_at(fields.get("at"))
+        self.every_s = max(MIN_SCHEDULE_S, float(fields.get("every_minutes") or 60) * 60)
+        self.days = [day for day in fields.get("days") or [] if day in DAYS]
+        self.next_t = self._next(time.time() if now is None else now)
+
+    def _next(self, now):
+        if not self.at:
+            return now + self.every_s
+        today = datetime.fromtimestamp(now, ZONE)
+        for add in range(8):
+            day = today + timedelta(days=add)
+            due = day.replace(hour=self.at[0], minute=self.at[1], second=0, microsecond=0)
+            if due.timestamp() > now and (not self.days or DAYS[due.weekday()] in self.days):
+                return due.timestamp()
+        return now + 86_400
+
+    def due(self, now):
+        """True once for each time it comes. A time missed while the server was off is skipped."""
+        if now < self.next_t:
+            return False
+        self.next_t = self._next(now)
+        return True
+
+    def public(self):
+        when = f"{self.at[0]:02d}:{self.at[1]:02d}" if self.at else f"every {self.every_s / 60:g} min"
+        return {"id": self.id, "when": when, "days": self.days, "next": self.next_t}
+
+
 class Rule:
     def __init__(self, app, rule_id, sentence, fields, folder, pointed=None):
         self.app = app
@@ -271,12 +339,14 @@ class Rule:
         self.sentence = sentence
         self.name = str(fields.get("name") or "Rule")[:60]
         self.plan = [str(step)[:90] for step in fields.get("plan") or []][:6]
-        self.sensors = [Sensor(s) for s in fields["sensors"]][:6]
+        self.sensors = [Sensor(s) for s in fields.get("sensors") or []][:6]
+        self.schedules = [Schedule(s) for s in fields.get("schedules") or []][:MAX_SCHEDULES]
         self.folder = folder
         self.pointed = pointed
         self.calls = deque()
         self.galleries = deque()
         self.controls = deque()
+        self.acts = deque()
         self.lit = set()
         self.values = {}
         self.fired = 0
@@ -339,6 +409,14 @@ class Rule:
             raise ValueError(f"This rule used a camera more than {MAX_CONTROLS_PER_MINUTE} times in a minute.")
         self.controls.append(now)
 
+    def allow_act(self):
+        now = time.time()
+        while self.acts and now - self.acts[0] > 60:
+            self.acts.popleft()
+        if len(self.acts) >= MAX_ACTS_PER_MINUTE:
+            raise ValueError(f"This rule ran more than {MAX_ACTS_PER_MINUTE} actions in a minute.")
+        self.acts.append(now)
+
     def _read(self):
         for line in self.worker.stdout:
             try:
@@ -370,10 +448,14 @@ class Rule:
         elif kind == "image":
             self.fired += 1
             self.app.image(self, message["path"], message.get("caption", ""), message.get("check"))
+        elif kind == "record":
+            self.app.record(self, message["name"], message.get("values") or {})
         elif kind in ("notify", "say"):
             self.fired += 1
             actions.run({"action": kind, "text": message["text"]})
             self.app.add_feed(self, kind, message["text"])
+            if kind == "notify":
+                self.app.alert(self, message["text"], message.get("picture"))
 
     def stop(self):
         worker, self.worker = self.worker, None
@@ -384,15 +466,24 @@ class Rule:
         return {
             "id": self.id, "sentence": self.sentence, "name": self.name, "plan": self.plan,
             "sensors": [s.public() for s in self.sensors], "values": self.values, "fired": self.fired,
+            "schedules": [s.public() for s in self.schedules],
             "pointed": (self.pointed or {}).get("noun", ""), "paused": self.paused,
         }
 
 
 class App:
-    def __init__(self, client, logs_dir=LOGS_DIR, inline=False):
-        """inline runs checks inside frame(), for tests. Live checks run in the background."""
+    def __init__(self, client, logs_dir=LOGS_DIR, inline=False, journal=None, connectors=None, rules_file=None):
+        """inline runs checks inside frame(), for tests. Live checks run in the background.
+
+        With no rules_file, rules do not return after a restart, and the journal and the actions
+        live in memory. main() passes the real files.
+        """
         self.client = client
         self.inline = inline
+        self.journal = journal or Journal()
+        self.connectors = connectors or Connectors()
+        self.rules_file = rules_file
+        self.drafts = OrderedDict()
         self.evidence = Evidence(logs_dir)
         self.entries = {}
         self.jobs = {}
@@ -423,11 +514,22 @@ class App:
         self.ask_calls = 0
         self.spark_usd = 0.0
         self.writer_usd = 0.0
+        self.spend_day = datetime.now(ZONE).date()
+
+    def _new_day(self):
+        """The spend starts again at midnight, so a hosted server works the next day."""
+        today = datetime.now(ZONE).date()
+        if today != self.spend_day:
+            # No lock: status() calls this while it holds self.lock.
+            self.spend_day = today
+            self.see_calls = self.ask_calls = 0
+            self.spark_usd = self.writer_usd = 0.0
 
     def spend(self):
         return self.see_calls * PRICE_SEE + self.spark_usd + self.writer_usd
 
     def stopped(self):
+        self._new_day()
         return self.spend() >= SPEND_LIMIT_USD
 
     def add_feed(self, rule, kind, text, **extra):
@@ -436,6 +538,8 @@ class App:
             item = {"id": self.feed_id, "rule": rule.name, "kind": kind, "text": text, **extra}
             self.feed.append(item)
         self.evidence.save_feed(item)
+        if kind in ("notify", "say", "draw", "image", "log", "error"):
+            self.journal.add(kind, rule.id, rule.name, text=text)
         return item
 
     def capture_fps(self):
@@ -456,6 +560,7 @@ class App:
                 "live_camera": self.camera_live(),
                 "cameras": self.cameras,
                 "controls": self.controls.public(),
+                "actions": self.connectors.public(),
                 "wall": self.wall,
                 "see_calls": self.see_calls,
                 "ask_calls": self.ask_calls,
@@ -504,7 +609,7 @@ class App:
                 example, idle, motions, gap_s = load_recording(folder)
             fields, cost = writer.write_rule(
                 self.client, folder, sentence, example, idle, progress, motions, gap_s, pointed, previous,
-                self.controls.describe(self.cameras))
+                self.controls.describe(self.cameras), self.connectors.describe(), self.journal.summary())
             with self.lock:
                 self.writer_usd += cost
             if fields.get("unsupported"):
@@ -521,6 +626,7 @@ class App:
             if old:
                 old.stop()
                 self.add_feed(rule, "log", "Rule updated. It now follows your new words.")
+            self.save_rules()
             job.update(status="done", rule=rule_id, cost=round(cost, 3))
         except (writer.WriterError, ApiError, OSError, ValueError, KeyError) as e:
             job.update(status="failed", error=str(e)[:300])
@@ -531,7 +637,37 @@ class App:
         if rule:
             rule.stop()
             self._lights_off(rule)
+            self.save_rules()
         return rule is not None
+
+    def save_rules(self):
+        """Lists the live rules, so they return after a restart."""
+        if not self.rules_file:
+            return
+        with self.lock:
+            items = [{"id": rule.id, "pointed": rule.pointed, "paused": rule.paused} for rule in self.entries.values()]
+        Path(self.rules_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.rules_file).write_text(json.dumps({"rules": items}, ensure_ascii=False))
+
+    def load_rules(self):
+        """Starts the rules that were live when the server stopped. Each keeps its ctx.state."""
+        try:
+            items = json.loads(Path(self.rules_file).read_text())["rules"]
+        except (OSError, TypeError, ValueError, KeyError):
+            return 0
+        for item in items[:MAX_RULES]:
+            rule_id = str(item.get("id") or "")
+            folder = sandbox.RULES_DIR / rule_id
+            if not rule_id.isalnum() or not (folder / "rule.json").exists():
+                continue
+            fields = json.loads((folder / "rule.json").read_text())
+            rule = Rule(self, rule_id, fields.get("sentence", ""), fields, folder, item.get("pointed"))
+            rule.paused = bool(item.get("paused"))
+            rule.start()
+            with self.lock:
+                self.entries[rule_id] = rule
+            self.add_feed(rule, "log", f"{rule.name} is back after a restart.")
+        return len(self.entries)
 
     def pause_rule(self, rule_id):
         """Stop: the rule stays, but it watches nothing and calls no model until Resume."""
@@ -547,6 +683,7 @@ class App:
                 sensor.reset(now)
             self._lights_off(rule)
             self.add_feed(rule, "log", f"{rule.name} is stopped.")
+            self.save_rules()
         return True
 
     def resume_rule(self, rule_id):
@@ -559,6 +696,7 @@ class App:
                 sensor.reset(time.time())
             rule.paused = False
             self.add_feed(rule, "log", f"{rule.name} is running again.")
+            self.save_rules()
         return True
 
     def code(self, rule_id):
@@ -566,13 +704,20 @@ class App:
         return (rule.folder / "rule.py").read_text() if rule else None
 
     def tick(self):
+        """A schedule runs with no camera. on_tick needs the camera, or a schedule in the rule."""
         now = time.time()
-        if now - self.last_frame > CAMERA_LOST_S:
-            return
+        camera = now - self.last_frame <= CAMERA_LOST_S
         with self.lock:
             rules = list(self.entries.values())
         for rule in rules:
-            if not rule.paused:
+            if rule.paused:
+                continue
+            for schedule in rule.schedules:
+                if schedule.due(now):
+                    self.journal.add("event", rule.id, rule.name, schedule.id, text="scheduled", t=now)
+                    rule.send({"type": "on", "sensor": schedule.id, "t": now, "event": {"note": "It is time."}})
+                    rule.send({"type": "off", "sensor": schedule.id, "t": now, "duration": 0.0})
+            if camera or rule.schedules:
                 rule.send({"type": "tick", "t": now})
 
     def _tick_loop(self):
@@ -650,9 +795,11 @@ class App:
         blocks = {"ask": self._rule_ask, "check": self._rule_check, "find": self._rule_find,
                   "frames": self._rule_frames, "gallery": self._rule_gallery,
                   "arm": self._rule_arm, "disarm": self._rule_disarm,
-                  "aim": self._rule_aim, "move": self._rule_move, "light": self._rule_light}
+                  "aim": self._rule_aim, "move": self._rule_move, "light": self._rule_light,
+                  "act": self._rule_act, "history": self._rule_history}
         try:
-            if self.stopped():
+            # An action or the journal calls no model, so a report still works at the spend limit.
+            if self.stopped() and message.get("name") not in ("act", "history", "disarm"):
                 raise ValueError("The spend limit stopped this call.")
             if rule.paused:
                 raise ValueError("This rule is stopped.")
@@ -665,6 +812,87 @@ class App:
         if check:
             self.evidence.add_step(check, step)
         self.add_feed(rule, "step", text)
+
+    def _picture(self, rule, path):
+        """A picture that rule code chose. It must be inside the rule's folder."""
+        if not path:
+            return None
+        file = rule_picture(rule.folder, path) if rule.folder else None
+        if not file:
+            raise ValueError(f"The rule cannot send {str(path)[:80]}.")
+        return file.read_bytes()
+
+    def _rule_act(self, rule, name, inputs=None, picture=None, check=None):
+        """Runs one of the person's actions for a rule. The server sends the request, not the rule."""
+        rule.allow_act()
+        inputs = dict(inputs or {})
+        try:
+            result = self.connectors.run(name, inputs, self._picture(rule, picture))
+        except ActionError as e:
+            self.journal.add("action", rule.id, rule.name, name, text=str(e), values={"ok": False})
+            raise
+        self.journal.add("action", rule.id, rule.name, name, text=f"status {result['status']}",
+                         values={"ok": result["ok"], "inputs": inputs})
+        word = "done" if result["ok"] else f"failed with status {result['status']}"
+        self._step(rule, check, {"act": name, "inputs": inputs, **result}, f"{name}: {word}")
+        return result
+
+    def _rule_history(self, rule, kind=None, name=None, rule_name=None, since=None, until=None, limit=2000):
+        """Reads the journal of all the person's rules, not only this one. A report reads this."""
+        return self.journal.history(kind, name, rule_name, since, until, limit)
+
+    def record(self, rule, name, values):
+        try:
+            self.journal.add("record", rule.id, rule.name, name, values=values)
+        except ValueError as e:
+            self.add_feed(rule, "error", str(e))
+
+    def alert(self, rule, text, picture=None):
+        """ctx.notify also goes to the person's phone. The request runs beside the rule."""
+        if any(item["alerts"] for item in self.connectors.ready()):
+            self._later(self._alert, rule, text, picture)
+
+    def _alert(self, rule, text, picture):
+        try:
+            for name, result in self.connectors.alert(text, self._picture(rule, picture)):
+                if not result["ok"]:
+                    self.add_feed(rule, "error", f"{name} answered with status {result['status']}.")
+        except (ActionError, ValueError, OSError) as e:
+            self.add_feed(rule, "error", str(e)[:300])
+
+    def draft_action(self, words):
+        """Wonder turns the person's words into one web request. Nothing runs until they test it."""
+        if self.stopped():
+            raise ValueError("The spend limit stopped this call.")
+        draft, cost = writer.write_action(self.client, words, [a["name"] for a in self.connectors.all()])
+        with self.lock:
+            self.writer_usd += cost
+        if draft.get("unsupported"):
+            raise writer.WriterError(draft["unsupported"])
+        action = check_draft(draft, [a["name"] for a in self.connectors.items])
+        draft_id = uuid.uuid4().hex[:8]
+        with self.lock:
+            self.drafts[draft_id] = action
+            while len(self.drafts) > MAX_DRAFTS:
+                self.drafts.popitem(last=False)
+        return {"id": draft_id, "action": self._show_draft(action), "cost": round(cost, 3)}
+
+    def _show_draft(self, action):
+        """The page sees the request with its blanks. The keys stay in actions.env."""
+        return {**action, "missing": self.connectors.missing(action)}
+
+    def test_draft(self, draft_id, inputs):
+        action = self.drafts.get(draft_id)
+        if not action:
+            raise ActionError("That draft is gone. Describe the action again.")
+        return self.connectors.send(action, inputs)
+
+    def save_draft(self, draft_id):
+        with self.lock:
+            action = self.drafts.pop(draft_id, None)
+        if not action:
+            raise ActionError("That draft is gone. Describe the action again.")
+        return self.connectors.add(action)
 
     def _rule_ask(self, rule, question, frames=(), model="spark", check=None):
         rule.allow_call()
@@ -1295,15 +1523,20 @@ class App:
         """Tells the rule's code. It runs each event in its own job, so this never waits for one."""
         if event == "next":
             rule.send({"type": "off", "sensor": sensor.id, "t": t, "duration": t - started_at})
+        if event == "next":
+            self.journal.add("end", rule.id, rule.name, sensor.id, seconds=t - started_at, t=t)
         if event in ("on", "moment", "next"):
             with sensor.lock:
                 sensor.subjects = [*sensor.subjects, proof][-MAX_SUBJECTS:]
                 sensor.review_after = max(sensor.review_after, t + sensor.watch_s)
             detail = self._event_detail(rule, check, result, proof)
+            self.journal.add("event", rule.id, rule.name, sensor.id, text=detail["note"], t=t)
             rule.send({"type": "on", "sensor": sensor.id, "t": t, "event": detail})
         if event == "moment":
+            self.journal.add("end", rule.id, rule.name, sensor.id, seconds=0.0, t=t)
             rule.send({"type": "off", "sensor": sensor.id, "t": t, "duration": 0.0})
         elif event == "off":
+            self.journal.add("end", rule.id, rule.name, sensor.id, seconds=t - started_at, t=t)
             rule.send({"type": "off", "sensor": sensor.id, "t": t, "duration": t - started_at})
         if event in ("off", "moment"):
             with sensor.lock:
@@ -1412,9 +1645,97 @@ def save_recording(folder, example, idle, motions=None, gap_s=None):
         (folder / "recording" / "timing.json").write_text(json.dumps({"motions": motions, "gap_s": gap_s}))
 
 
+LOGIN_PAGE = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Whenever</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Whenever</h1>
+    <p>Point at it, say it, or show it. Your camera runs it.</p>
+  </header>
+  <main class="login">
+    <form id="login">
+      <label for="code">Access code</label>
+      <input id="code" type="password" autocomplete="current-password" required>
+      <div class="form-row"><button type="submit">Open Whenever</button></div>
+      <p id="note" class="note">This demo spends real model credit, so it needs the code from the submission.</p>
+    </form>
+  </main>
+  <script>
+    document.getElementById("login").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const response = await fetch("/api/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: document.getElementById("code").value }),
+      });
+      if (response.ok) location.reload();
+      else {
+        const note = document.getElementById("note");
+        note.className = "note error";
+        note.textContent = (await response.json()).error || "That code did not work.";
+      }
+    });
+  </script>
+</body>
+</html>
+"""
+
+
+class Access:
+    """The access code of a hosted server, and the sessions of the people who gave it."""
+
+    def __init__(self, path=ACCESS_FILE, sessions_path=SESSIONS_FILE):
+        try:
+            self.code = Path(path).read_text().strip()
+        except OSError:
+            self.code = ""
+        self.sessions_path = Path(sessions_path)
+        self.lock = threading.Lock()
+        self.failures = deque()
+        try:
+            self.sessions = {k: float(v) for k, v in json.loads(self.sessions_path.read_text()).items()}
+        except (OSError, ValueError, AttributeError):
+            self.sessions = {}
+
+    def needed(self):
+        return bool(self.code)
+
+    @staticmethod
+    def _hash(token):
+        # Only a hash is saved, so the sessions file cannot log anyone in.
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    def valid(self, token):
+        return self.sessions.get(self._hash(str(token)), 0) > time.time()
+
+    def login(self, code):
+        """Returns a new session token, or None. Wrong codes are limited, so guessing is slow."""
+        now = time.time()
+        with self.lock:
+            while self.failures and now - self.failures[0] > 60:
+                self.failures.popleft()
+            if len(self.failures) >= MAX_LOGINS_PER_MINUTE:
+                raise ValueError("Too many tries. Wait one minute.")
+            if not self.code or not hmac.compare_digest(str(code).encode(), self.code.encode()):
+                self.failures.append(now)
+                return None
+            token = secrets.token_urlsafe(32)
+            self.sessions = {k: v for k, v in self.sessions.items() if v > now}
+            self.sessions[self._hash(token)] = now + SESSION_S
+            self.sessions_path.parent.mkdir(parents=True, exist_ok=True)
+            self.sessions_path.write_text(json.dumps(self.sessions))
+        return token
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     app = None
+    access = Access(path="", sessions_path=os.devnull)
 
     def log_message(self, fmt, *args):
         if "/api/" not in str(args[0]):
@@ -1436,10 +1757,33 @@ class Handler(BaseHTTPRequestHandler):
     def _allowed(self):
         # Only this page may use the server, so another website cannot trigger actions or spend.
         local = (f"127.0.0.1:{PORT}", f"localhost:{PORT}")
-        if self.headers.get("Host") not in local:
+        host = self.headers.get("Host")
+        if host in local:
+            origins = tuple(f"http://{h}" for h in local)
+        elif host in HOSTS:
+            origins = (f"https://{host}",)
+        else:
             return False
         origin = self.headers.get("Origin")
-        return origin is None or origin in tuple(f"http://{h}" for h in local)
+        return origin is None or origin in origins
+
+    def _logged_in(self):
+        if not self.access.needed():
+            return True
+        cookie = SimpleCookie(self.headers.get("Cookie") or "").get("whenever")
+        return bool(cookie) and self.access.valid(cookie.value)
+
+    def _login(self):
+        raw = self._read(MAX_LABEL_BYTES)
+        try:
+            token = self.access.login(json.loads(raw or b"{}").get("code") or "")
+        except ValueError as e:
+            return self._json(429, {"error": str(e)})
+        if not token:
+            return self._json(403, {"error": "That code did not work."})
+        secure = "; Secure" if self.headers.get("Host") in HOSTS else ""
+        cookie = f"whenever={token}; Path=/; Max-Age={SESSION_S}; HttpOnly; SameSite=Strict{secure}"
+        self._send(200, b'{"ok": true}', "application/json", [("Set-Cookie", cookie)])
 
     def _read(self, limit):
         length = int(self.headers.get("Content-Length") or 0)
@@ -1452,6 +1796,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self._allowed():
             return self._json(403, {"error": "Forbidden."})
         path, _, query = self.path.partition("?")
+        if not self._logged_in():
+            if path in ("/", "/index.html"):
+                return self._send(200, LOGIN_PAGE.encode(), "text/html; charset=utf-8")
+            if path != "/style.css":
+                return self._json(401, {"error": "Log in first."})
         if path == "/api/state":
             params = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
             return self._json(200, self.app.status(int(params.get("after", 0)), int(params.get("results", 0))))
@@ -1500,6 +1849,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._allowed():
             return self._json(403, {"error": "Forbidden."})
+        if self.path == "/api/login":
+            return self._login()
+        if not self._logged_in():
+            return self._json(401, {"error": "Log in first."})
         try:
             if self.path == "/api/frame":
                 jpeg = self._read(MAX_FRAME_BYTES)
@@ -1579,8 +1932,22 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(raw)
                 self.app.evidence.label(str(body.get("check"))[:20], str(body.get("label"))[:40])
                 return self._json(200, {"saved": True})
+            if self.path == "/api/action/draft":
+                raw = self._read(MAX_ACTION_WORDS * 4)
+                if raw is None:
+                    return self._json(413, {"error": "The description is too long."})
+                words = str(json.loads(raw).get("words") or "").strip()[:MAX_ACTION_WORDS]
+                if not words:
+                    return self._json(400, {"error": "Describe the action."})
+                return self._json(200, self.app.draft_action(words))
+            if self.path.startswith("/api/action/") and self.path.rsplit("/", 1)[1] in ("test", "save"):
+                draft_id, step = self.path.split("/")[3:5]
+                if step == "save":
+                    return self._json(200, {"saved": self.app.save_draft(draft_id)["name"]})
+                inputs = json.loads(self._read(MAX_LABEL_BYTES * 4) or b"{}").get("inputs") or {}
+                return self._json(200, self.app.test_draft(draft_id, inputs))
             self._json(404, {"error": "Not found."})
-        except (writer.WriterError, ControlError) as e:
+        except (writer.WriterError, ControlError, ActionError) as e:
             self._json(422, {"error": str(e)})
         except (ApiError, VoiceError) as e:
             self._json(502, {"error": str(e)[:300]})
@@ -1588,10 +1955,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "Bad request."})
 
     def do_DELETE(self):
-        if not self._allowed():
+        if not self._allowed() or not self._logged_in():
             return self._json(403, {"error": "Forbidden."})
         if self.path.startswith("/api/rule/"):
             removed = self.app.remove_rule(self.path.rsplit("/", 1)[1])
+            return self._json(200 if removed else 404, {"removed": removed})
+        if self.path.startswith("/api/action/"):
+            removed = self.app.connectors.remove(unquote(self.path.rsplit("/", 1)[1]))
             return self._json(200 if removed else 404, {"removed": removed})
         self._json(404, {"error": "Not found."})
 
@@ -1599,7 +1969,14 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     if not ENV_FILE.exists() or not ENV_FILE.read_text().strip():
         sys.exit(f"Add your Meta API key to {ENV_FILE}")
-    Handler.app = App(Client(load_key(ENV_FILE)))
+    Handler.app = App(Client(load_key(ENV_FILE)), journal=Journal(JOURNAL_FILE),
+                      connectors=Connectors(ACTIONS_FILE), rules_file=RULES_FILE)
+    Handler.access = Access()
+    if Handler.access.needed():
+        print("The page asks for the access code in access.env.", flush=True)
+    back = Handler.app.load_rules()
+    if back:
+        print(f"{back} rules are back after the restart.", flush=True)
     Handler.app.start_ticks()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"Whenever is running at http://127.0.0.1:{PORT}", flush=True)

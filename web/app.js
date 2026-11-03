@@ -40,6 +40,7 @@ const liveCanvas = document.createElement("canvas");
 let liveCamera = false;      // a security camera feeds the view, in place of this computer's camera
 let aiming = null;           // the moving lens that the next click in the view aims
 let controlsKey = "";
+let actionsKey = "";
 let liveLost = false;
 let liveSeq = 0;
 let previous = null;
@@ -428,6 +429,134 @@ function renderControls(controls = []) {
   $("controls").replaceChildren(...controls.map(cameraControls));
 }
 
+function inputsText(action) {
+  return action.inputs.map((input) => input.name).join(", ") || "no inputs";
+}
+
+function renderActions(actions = []) {
+  const key = JSON.stringify(actions);
+  if (key === actionsKey) return;
+  actionsKey = key;
+  $("actions").replaceChildren(...actions.map((action) => {
+    const item = element("li", action.missing.length ? "action waiting" : "action");
+    const head = element("div", "rule-head");
+    head.append(element("span", null, action.name));
+    if (action.kind !== "phone") {
+      const remove = element("button", "quiet small", "Remove");
+      remove.type = "button";
+      remove.onclick = async () => {
+        await fetch("/api/action/" + encodeURIComponent(action.name), { method: "DELETE" });
+        refreshState();
+      };
+      head.append(remove);
+    }
+    item.append(head, element("p", "sentence", action.description));
+    item.append(element("p", "timing", `${action.method} to ${action.host}. Inputs: ${inputsText(action)}.` +
+      (action.alerts ? " Every notification also goes here." : "")));
+    if (action.missing.length) {
+      item.append(element("p", "timing warn", `Not ready: put ${action.missing.join(", ")} in actions.env.`));
+    }
+    return item;
+  }));
+}
+
+function typed(text) {
+  // A test input of true, false or a number keeps its type, as rule code would send it.
+  if (text === "true" || text === "false") return text === "true";
+  return text.trim() !== "" && !isNaN(Number(text)) ? Number(text) : text;
+}
+
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "The server said no.");
+  return data;
+}
+
+function showDraft(draft) {
+  const action = draft.action;
+  const box = $("action-draft");
+  const fields = action.inputs.map((input) => {
+    const label = element("label", "draft-input");
+    const field = element("input");
+    field.value = input.example;
+    field.dataset.name = input.name;
+    label.append(element("span", null, `${input.name}: ${input.description}`), field);
+    return label;
+  });
+  const request = element("pre", "draft-request",
+    `${action.method} ${action.url}` +
+    Object.entries(action.headers).map(([name, value]) => `\n${name}: ${value}`).join("") +
+    (action.body_type !== "none" ? `\n\n${action.body}` : ""));
+  const result = element("p", "note");
+  const test = element("button", "quiet", "Test it");
+  test.type = "button";
+  test.onclick = async () => {
+    const inputs = Object.fromEntries(fields.map((label) => {
+      const field = label.querySelector("input");
+      return [field.dataset.name, typed(field.value)];
+    }));
+    result.className = "note";
+    result.textContent = "Sending the test request…";
+    try {
+      const reply = await postJson(`/api/action/${draft.id}/test`, { inputs });
+      result.className = reply.ok ? "note ok" : "note error";
+      result.textContent = `Status ${reply.status}. ${reply.reply}`.slice(0, 300);
+    } catch (e) {
+      result.className = "note error";
+      result.textContent = e.message;
+    }
+  };
+  const save = element("button", null, "Save action");
+  save.type = "button";
+  save.onclick = async () => {
+    try {
+      const saved = await postJson(`/api/action/${draft.id}/save`);
+      box.hidden = true;
+      $("action-words").value = "";
+      $("action-note").className = "note ok";
+      $("action-note").textContent = `${saved.saved} is ready. New rules can use it.`;
+      refreshState();
+    } catch (e) {
+      result.className = "note error";
+      result.textContent = e.message;
+    }
+  };
+  const row = element("div", "form-row");
+  row.append(save, test);
+  box.replaceChildren(element("b", null, action.name), element("p", "sentence", action.description), request, ...fields);
+  if (action.missing.length) {
+    box.append(element("p", "timing warn", `Before a test, put ${action.missing.join(", ")} in actions.env. ` +
+      action.secrets.map((secret) => `${secret.name}: ${secret.description}`).join(" ")));
+  }
+  box.append(row, result);
+  box.hidden = false;
+}
+
+$("action-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const words = $("action-words").value.trim();
+  if (!words) return;
+  $("action-add").disabled = true;
+  $("action-draft").hidden = true;
+  $("action-note").className = "note";
+  $("action-note").textContent = "Wonder is writing the request…";
+  try {
+    const draft = await postJson("/api/action/draft", { words });
+    $("action-note").textContent = `Check the request, test it, then save it. Cost $${draft.cost}.`;
+    showDraft(draft);
+  } catch (e) {
+    $("action-note").className = "note error";
+    $("action-note").textContent = e.message;
+  } finally {
+    $("action-add").disabled = false;
+  }
+});
+
 async function pointAt(event) {
   if (!video.videoWidth || recording || event.target.closest("a")) return;
   const spot = clickToFrame(event);
@@ -674,6 +803,11 @@ function renderRules() {
     head.append(element("span", null, rule.paused ? `${rule.name} (stopped)` : rule.name), toggle, edit, remove);
     item.append(head, element("p", "sentence", rule.sentence));
     if (rule.pointed) item.append(element("p", "timing", `Pointed at: ${rule.pointed}`));
+    for (const schedule of rule.schedules || []) {
+      const days = schedule.days.length ? ` on ${schedule.days.join(", ")}` : "";
+      const next = new Date(schedule.next * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+      item.append(element("p", "timing", `${schedule.id}: ${schedule.when}${days}. Next: ${next}.`));
+    }
 
     for (const sensor of rule.sensors) {
       const timing = element("p", "timing");
@@ -745,6 +879,7 @@ async function refreshState() {
   }
   $("s-spend").textContent = "$" + state.spend_usd.toFixed(3);
   renderControls(state.controls);
+  renderActions(state.actions);
   const key = rules.map((r) => `${r.id}:${r.paused}`).join(",");
   if (key !== rulesKey) {
     rulesKey = key;
