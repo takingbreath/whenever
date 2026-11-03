@@ -166,6 +166,8 @@ class Sandbox(unittest.TestCase):
         cls.addClassCleanup(shutil.rmtree, cls.folder)
 
     def test_cannot_read_the_api_key(self):
+        if not (Path(__file__).resolve().parent.parent / ".env").exists():
+            self.skipTest("There is no .env to protect.")
         code, output = sandbox.run(self.folder, "cat ../../.env")
         self.assertNotEqual(code, 0)
         self.assertIn("Operation not permitted", output)
