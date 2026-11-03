@@ -8,7 +8,7 @@ This repo holds the prototype. It runs on a Mac. Rules can see, but they cannot 
 
 ## Hackathon
 
-We built Whenever for the Meta Global AI Developer Hackathon, startup track. All the code in this repo is new work, written from 30 October 2026.
+Akhilesh Khajuria ([takingbreath](https://github.com/takingbreath)) built Whenever for the Meta Global AI Developer Hackathon, startup track. All the code in this repo is new work, written from 30 October 2026.
 
 | Meta model | What it does here |
 |---|---|
