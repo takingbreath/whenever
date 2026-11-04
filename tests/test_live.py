@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -207,6 +208,8 @@ class Analyzer(unittest.TestCase):
         seen = self.live.alert_people(["Cafe"], 12)
         asha = seen["people"][0]
         self.assertEqual((asha["name"], asha["by"], asha["sighting"] is not None), ("Asha", "face", True))
+        self.assertEqual((asha["confirmed"], asha["tagged"] is not None), (None, True))
+        self.assertTrue(out["events"][0]["picture"].startswith("/live-file/events/"))
         self.assertEqual([e["kind"] for e in asha["evidence"]], ["face", "tracker"])
         self.assertTrue(asha["evidence"][0]["text"].startswith("1 clear look, "))
         self.assertTrue(asha["now_face"].startswith("/live-file/faces/"))
@@ -238,6 +241,20 @@ class Analyzer(unittest.TestCase):
         evidence = self.live.alert_people(["Gate"], 48)["people"][0]["evidence"]
         self.assertEqual([e["kind"] for e in evidence], ["clothes", "tracker"])
         self.assertTrue(evidence[0]["text"].endswith("2 cameras"))
+
+    def test_a_tag_of_clothes_today_names_a_track_by_look(self):
+        self.app.embedder = FakeLooks()   # the same look numbers as the tag's
+        clothes = np.zeros((64, 64, 3), np.uint8)
+        clothes[:, :, 1] = 90             # no face, green clothes
+        ravi = self.app.people.tag("Ravi", clothes)
+        start = time.time()
+        for i in range(7):
+            self.look(start + i, [person(GUEST)], picture=frame_picture(0, (0, 90, 0)))
+        while self.live.looks:
+            self.live.add_look(*self.live.looks.popleft())
+        seen = self.look(start + 8, [person(GUEST)], picture=frame_picture(0, (0, 90, 0)))["cameras"]["Cafe"]["people"][0]
+        self.assertEqual((seen["name"], seen["by"], seen["sure"]), ("Ravi", "look", round(0.99 * 0.8, 3)))
+        self.assertEqual(self.app.people.page(ravi["id"])["sightings"][0]["by"], "look")
 
     def test_heat_and_a_search_in_words(self):
         red = (220, 10, 10)
@@ -394,6 +411,15 @@ class Alerts(unittest.TestCase):
         row = [r for r in self.app.journal.history("notify")][-1]
         self.assertEqual(row["values"]["people"][0]["name"], "Asha")
         self.assertEqual(row["values"]["story"][0]["text"], "T3 hand up")
+        alert = next(item for item in self.app.feed if item["kind"] == "alert")
+        self.assertEqual((alert["people"][0]["name"], alert["story"][0]["text"]), ("Asha", "T3 hand up"))
+        self.assertIn("cameras", alert)
+
+    def test_a_clip_of_saved_frames_starts_at_its_first_frame(self):
+        for t in (96.0, 97.5, 99.0, 101.0):
+            self.frame(t)
+        self.assertEqual(self.app.clip_start(100.0), 96.0)
+        self.assertIsNone(self.app.clip_start(500.0))
 
     def test_the_glow_draws_from_a_mask_or_a_box(self):
         picture = Image.new("RGB", (200, 100), (0, 0, 0))
@@ -404,6 +430,9 @@ class Alerts(unittest.TestCase):
         self.assertEqual(len(polygons[0]), 8)
         self.server.glow(picture, ("mask", polygons))
         self.assertGreater(picture.getpixel((35, 10))[0], 100)
+        # SAM's mask covers only its object's box, so its points are placed inside that box.
+        inside = self.server.svg_polygons("M10 10L60 10L60 90L10 90L5 50L10 30L12 20L11 15Z", 100, 100, (0.5, 0.5, 1, 1))
+        self.assertEqual(inside[0][0], (0.55, 0.55))
 
     def test_paused_spending_draws_the_box_without_sam(self):
         self.app.stopped = lambda: True

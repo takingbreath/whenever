@@ -438,13 +438,16 @@ def fit_values(values, limit):
     return values
 
 
-def svg_polygons(path, width, height, most=400):
-    """The outlines in an SVG path from SAM (M x y L x y ... Z), as lists of (x, y) from 0 to 1. A long
+def svg_polygons(path, width, height, box=(0.0, 0.0, 1.0, 1.0), most=400):
+    """The outlines in an SVG path from SAM (M x y L x y ... Z), as lists of (x, y) from 0 to 1 in the whole
+    picture. SAM's mask covers only its object's box, from 0 to 1, in width x height pixels of its own. A long
     outline keeps every few points, which is enough to draw it."""
+    x1, y1, x2, y2 = box
     polygons = []
     for part in re.findall(r"M[^M]*", str(path or "")):
         numbers = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", part)]
-        points = [(x / max(width, 1), y / max(height, 1)) for x, y in zip(numbers[::2], numbers[1::2])]
+        points = [(x1 + x / max(width, 1) * (x2 - x1), y1 + y / max(height, 1) * (y2 - y1))
+                  for x, y in zip(numbers[::2], numbers[1::2])]
         if len(points) >= 8:
             step = max(1, len(points) // most)
             polygons.append(points[::step])
@@ -1202,7 +1205,8 @@ class App:
                                         ("cameras", extra.get("cameras")), ("occurrence", occurrence),
                                         ("pictures", pictures), ("places", extra.get("places")),
                                         ("mode", extra.get("mode")), ("sent_at", extra.get("sent_at")),
-                                        ("people", extra.get("people")), ("story", extra.get("story"))) if v}
+                                        ("people", extra.get("people")), ("story", extra.get("story")),
+                                        ("clip_start", extra.get("clip_start"))) if v}
             # An alert with its people and story needs more room than a rule's own record.
             self.journal.add(kind, rule.id, rule.name, text=text, values=fit_values(values, ALERT_DATA_BYTES),
                              limit=ALERT_DATA_BYTES)
@@ -2364,7 +2368,9 @@ class App:
                 media = self.alert_media(rule, picture, occurrence, clip=False)
                 title = inputs.get("title") or self._alert_title(rule, media)
                 # The page shows the alert at once, as the phone does.
-                self.add_feed(rule, "alert", text, url=media["url"], cameras=media["cameras"], occurrence=occurrence)
+                seen = self._alert_people(media, text)
+                self.add_feed(rule, "alert", text, url=media["url"], cameras=media["cameras"], occurrence=occurrence,
+                              clip_start=self.clip_start(media.get("when") or time.time(), media["cameras"]), **seen)
                 places, how = self._deliver(rule, occurrence, text, title, media)
                 sent = [p["label"] for p in places if p["ok"]]
                 ok = bool(sent) or not self.channels.paired()
@@ -2379,7 +2385,8 @@ class App:
             raise
         url = (media or {}).get("url") or self.picture_url(rule, picture)
         values = {"ok": result["ok"], "inputs": inputs, "picture": url, "occurrence": occurrence,
-                  "clip": (media or {}).get("clip_url"), "places": result.get("places"),
+                  "clip": (media or {}).get("clip_url"), "clip_start": (media or {}).get("clip_start"),
+                  "places": result.get("places"),
                   "cameras": (media or {}).get("cameras"), "how": result.get("how"),
                   "sent_at": round((media or {}).get("sent_at") or 0, 1) or None}
         self.journal.add("action", rule.id, rule.name, name, text=f"status {result['status']}",
@@ -2420,7 +2427,8 @@ class App:
         # A later note about an occurrence that already alerted, with nothing new to see, stays on the page.
         news = bool(picture) or not (occurrence and occurrence in self.threads)
         if news:
-            self.add_feed(rule, "alert", text, url=media["url"], cameras=media["cameras"], occurrence=occurrence, **seen)
+            self.add_feed(rule, "alert", text, url=media["url"], cameras=media["cameras"], occurrence=occurrence,
+                          clip_start=self.clip_start(media.get("when") or time.time(), media["cameras"]), **seen)
         places, how = [], "here"
         try:
             places, how = self._deliver(rule, occurrence, text, self._alert_title(rule, media), media, news, to)
@@ -2430,7 +2438,7 @@ class App:
             self.alert_clip(rule, media)
         self.add_feed(rule, "notify", text, url=media["url"], clip=media.get("clip_url"), cameras=media["cameras"],
                       occurrence=occurrence, places=[p["label"] for p in places if p["ok"]], mode=how,
-                      sent_at=round(media.get("sent_at") or 0, 1) or None, **seen)
+                      sent_at=round(media.get("sent_at") or 0, 1) or None, clip_start=media.get("clip_start"), **seen)
 
     def _alert_people(self, media, text, to=None):
         """What the live analyzer saw around an alert: {"people", "story"} for the page, or {}. An alert to
@@ -2503,7 +2511,7 @@ class App:
 
     def make_clip(self, rule, t, tiles, folder):
         """A short MP4 of the cameras that matter, from the frames around the moment. None without ffmpeg."""
-        frames = [f for f in list(self.timeline) if t - CLIP_BEFORE_S <= f.t <= t + CLIP_AFTER_S][-MAX_CLIP_FRAMES:]
+        frames = self.clip_frames(t)
         if len(frames) < MIN_CLIP_FRAMES or not shutil.which("ffmpeg"):
             return None
         with tempfile.TemporaryDirectory() as work:
@@ -2607,11 +2615,11 @@ class App:
         if not found:
             return ("box", box)
 
-        def cover(item):
+        def place(item):
             w, h = item.get("w") or width, item.get("h") or height
-            return share_inside(box, (item["x1"] / w, item["y1"] / h, item["x2"] / w, item["y2"] / h))
-        best = max(found, key=cover)
-        polygons = svg_polygons(best["path"], best.get("mask_w") or width, best.get("mask_h") or height)
+            return item["x1"] / w, item["y1"] / h, item["x2"] / w, item["y2"] / h
+        best = max(found, key=lambda item: share_inside(box, place(item)))
+        polygons = svg_polygons(best["path"], best.get("mask_w") or width, best.get("mask_h") or height, place(best))
         return ("mask", polygons) if polygons else ("box", box)
 
     def _subject_mark(self, subject, name, tiles, cameras, when):
@@ -2687,11 +2695,26 @@ class App:
             return media
         # The same cameras as the picture, in its order: the picture is a moment of the clip.
         cameras = media["cameras"] or (list(self.cameras[:1]) if len(self.cameras) == 1 else [])
-        clip = (self.buffer_clip(rule, cameras, media["when"], rule.folder) if cameras else None) or \
-            self.make_clip(rule, media["when"], media["tiles"], rule.folder)
+        buffered = self.buffer_clip(rule, cameras, media["when"], rule.folder) if cameras else None
+        clip = buffered or self.make_clip(rule, media["when"], media["tiles"], rule.folder)
         if clip:
             media["clip"], media["clip_url"] = clip
+            # The page draws the live analyzer's boxes over the clip, so it needs the time of its first frame.
+            media["clip_start"] = round(media["when"] - CLIP_BEFORE_S, 2) if buffered else self.clip_start(media["when"])
         return media
+
+    def clip_frames(self, t):
+        """The saved frames that a clip of the moment at time t is made of."""
+        with self.lock:
+            return [f for f in list(self.timeline) if t - CLIP_BEFORE_S <= f.t <= t + CLIP_AFTER_S][-MAX_CLIP_FRAMES:]
+
+    def clip_start(self, t, cameras=()):
+        """When the clip of the moment at time t starts: the media server's buffer starts CLIP_BEFORE_S
+        before it, and a clip of saved frames at its first frame. None without either."""
+        if PLAYBACK_URL and cameras and all(self.streams.get(name) for name in cameras):
+            return round(t - CLIP_BEFORE_S, 2)
+        frames = self.clip_frames(t)
+        return round(frames[0].t, 2) if frames else None
 
     def _deliver(self, rule, occurrence, text, title, media, news=True, to=None):
         """Sends one alert to the person's places, and returns (places, how): "sent", "reply" or "here".
@@ -3108,7 +3131,7 @@ class App:
         if page is None:
             return None
         person = dict(page["person"])
-        person["picture"] = self.person_file(person_id, person.get("picture"))
+        person["picture"] = person["face"] = self.person_file(person_id, person.get("picture"))
         last = page["last"]
         if last:
             last = dict(last, picture=self.person_file(person_id, last.get("picture")) or person["picture"])

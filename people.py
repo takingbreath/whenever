@@ -427,7 +427,7 @@ class People:
                 index = next((i for i, s in enumerate(person["faces"]) if not s.get("tag")), 0)
                 person["faces"].pop(index)
         if found["look"] is not None:
-            person["looks"].append({"v": _numbers(found["look"]), "t": now})
+            person["looks"].append({"v": _numbers(found["look"]), "t": now, **({"tag": True} if keep else {})})
             person["looks"] = [s for s in person["looks"] if now - s["t"] < LOOK_HOURS * 3600][-MAX_LOOKS:]
 
     def _save_crop(self, person_id, crop, prefix="face", keep=12):
@@ -470,7 +470,8 @@ class People:
     def _face_today(self, person, now):
         """(sure, camera) of the person's surest face today: a tag, or a face sighting. None without one."""
         best = None
-        for sample in person["faces"]:
+        # The operator's own tag today, with a face or with only a look, is the surest of all.
+        for sample in person["faces"] + person["looks"]:
             if sample.get("tag") and same_day(sample["t"], now):
                 best = max(best or (0.0, ""), (MAX_SURE, ""))
         for seen in person["seen"]:

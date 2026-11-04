@@ -216,6 +216,7 @@ class Analyzer:
         self.done = deque(maxlen=400)
         self.spend_marks = deque()
         self.errors = deque(maxlen=20)
+        self.pending = []         # rows of tracks to save with the next look
         self.running = False
         self.pool = None
         self.pruned = 0.0
@@ -425,7 +426,8 @@ class Analyzer:
             dirty = [tr for tr in cam.tracks.values() if tr.label == "person" and tr.last == t and t - tr.saved >= 10]
             for tr in dirty:
                 tr.saved = t
-            saves = [self._track_row(tr) for tr in dirty]
+            saves = [self._track_row(tr) for tr in dirty] + self.pending
+            self.pending = []
             self.done.append((self.clock(), time.monotonic() - started))
         with self.db_lock:
             self.db.execute("INSERT INTO frames (camera, t, data) VALUES (?, ?, ?)", (name, t, json.dumps(row)))
@@ -456,7 +458,9 @@ class Analyzer:
                 self.looks.append((cam.name, track.id, _crop(picture, f.box, 0.05), t, box_px[0] * box_px[1]))
                 self.looks_ready.set()
         for number in [n for n, tr in cam.tracks.items() if t - tr.last > KEEP_TRACK_S]:
-            del cam.tracks[number]
+            gone = cam.tracks.pop(number)
+            if gone.label == "person" and gone.saved < gone.last:
+                self.pending.append(self._track_row(gone))   # its last name and time stay for history
         return wanted
 
     def _sitting(self, cam, track, body, names, t):
@@ -571,6 +575,7 @@ class Analyzer:
         track.who.update(id=match["id"], by="face", sure=people.combine(track.hits[best]))
         track.who_face_t = t
         track.sighting = match.get("sighting") or track.sighting
+        track.saved = -1e9   # the next look saves the name
         if first:
             self._arrived(cam, track, t, picture)
 
@@ -626,10 +631,27 @@ class Analyzer:
                 self.day_looks[track.who["id"]] = self.day_looks[track.who["id"]][-people.MAX_LOOKS:]
             elif track.who is None:
                 self._carry(cam, track, vector, t)
+                if track.who is None:
+                    self._tagged_look(cam, track, vector, t)
+            carried = dict(track.who) if track.who and track.who.get("by") == "look" and not track.sighting else None
             row = self._track_row(track)
         with self.db_lock:
             self._save_tracks([row])
             self.db.commit()
+        if carried:
+            # A name from clothes is a sighting too, so the person's page shows it, by look.
+            sighting = self.app.people.saw(dict(carried, score=carried.get("score") or 0.0, face_px=0),
+                                           {"face": None, "look": None, "crop": None}, camera, now=t)
+            with self.lock:
+                track.sighting = sighting
+
+    def _tagged_look(self, cam, track, vector, t):
+        """A track with no face, in the clothes of a person whom the operator tagged today."""
+        match = self.app.people.match({"face": None, "look": vector, "face_size": 0}, t, cam.name)
+        if match:
+            track.who = {k: match.get(k) for k in ("person_id", "name", "role", "visitor", "visits", "score", "face_px")}
+            track.who.update(id=match["id"], by="look", sure=match["sure"])
+            self._arrived(cam, track, t, None)
 
     def _new_day(self, t):
         day = datetime.fromtimestamp(t, self.zone).date()
@@ -836,7 +858,8 @@ class Analyzer:
         totals = {"people": everyone, "guests": everyone - staff, "staff": staff, "busy": busy, "tables": tables,
                   "longest_s": longest, "spend_hour": self.spend_hour()}
         return {"t": now, "cameras": cameras, "totals": totals,
-                "events": [{k: e[k] for k in ("t", "camera", "kind", "text", "person")} for e in events]}
+                "events": [{**{k: e[k] for k in ("t", "camera", "kind", "text", "person")}, "picture": self.url(e["picture"])}
+                           for e in events]}
 
     def spend_hour(self):
         """What the paid models cost in the last hour, from samples of the day's spend."""
@@ -1049,11 +1072,16 @@ class Analyzer:
                          else "followed for under a minute"})
         record = self.app.people.get(who["id"]) or {}
         tag_face = f"/people-file/{who['id']}/{record['picture']}" if record.get("picture") else None
+        # When the operator tagged them (None for a visitor), and their answer on this sighting, if any.
+        tags = [s["t"] for s in list(record.get("faces") or []) + list(record.get("looks") or []) if s.get("tag")]
+        tagged = None if record.get("kind") == "visitor" else (min(tags) if tags else record.get("t"))
+        answer = next((s.get("checked") for s in list(record.get("seen") or []) if s.get("id") == track.sighting), None)
         now_face = self.url(getattr(track, "face_file", None))
         name = who.get("visitor") or who.get("name")
         return {"person_id": who["id"], "name": name, "role": who.get("role") or "", "sure": who.get("sure"),
                 "by": who.get("by"), "evidence": evidence, "tag_face": tag_face, "now_face": now_face,
-                "sighting": track.sighting,
+                "sighting": track.sighting, "tagged": tagged,
+                "confirmed": {"yes": True, "no": False}.get(answer),
                 "arrived": {"t": round(track.first, 2), "text": f"{name} arrived", "picture": now_face or self.url(track.crop)}}
 
     def alert_subject(self, cameras, t):

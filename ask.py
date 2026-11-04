@@ -314,7 +314,8 @@ class Asks:
                 next((r["values"] for r in mine if r["kind"] in ("action", "notify") and r["values"].get("picture")), {})
             moments.append({"t": event["t"], "camera": event["values"].get("camera", ""),
                             "picture": media.get("picture") or event["values"].get("picture"),
-                            "clip": media.get("clip"), "note": event["text"], "occurrence": occurrence,
+                            "clip": media.get("clip"), "clip_start": media.get("clip_start"),
+                            "note": event["text"], "occurrence": occurrence,
                             "end": (ends.get(occurrence) or {}).get("t")})
         if rule is None and not events:
             return self.finish(job, f"No Whenever named {plan['rule'] or 'that'} has a record of this.", 0.5, [])
