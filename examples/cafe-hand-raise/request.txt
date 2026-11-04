@@ -1,0 +1,1 @@
+When a guest in the cafe raises a hand to call for service, alert the Waiter at once. If no staff member reaches that table within 1 minute, alert the Manager.

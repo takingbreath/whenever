@@ -1,0 +1,55 @@
+{
+ "sentence": "Tell me when someone opens the gate, with the picture.",
+ "name": "Gate Open Alert",
+ "plan": [
+  "Watch the gate for it swinging open",
+  "Send an alert as soon as it opens",
+  "Attach the picture that proved it",
+  "Record when it closes and for how long"
+ ],
+ "schedules": [],
+ "sensors": [
+  {
+   "check_every_s": 1.2,
+   "clear_after_s": 5,
+   "frames_per_check": 4,
+   "frames_per_second": 2,
+   "id": "gate_open",
+   "min_count": 1,
+   "min_motion": 0,
+   "outline": "gate",
+   "pattern": "state",
+   "question": "Is the gate open, with its panel swung away from the closed position and a clear gap in the fence line where the gate normally blocks passage?",
+   "reason": "A gate stays open at least a few seconds; checking every 1.2s catches even a brief opening, and 5s clear avoids splitting one opening when a person or car briefly hides it.",
+   "requires": [
+    "A gate panel is visible swung away from its closed, fence-aligned position",
+    "An open gap is visible in the fence line where the closed gate normally blocks passage"
+   ],
+   "shortest_event_s": 3,
+   "starts_off": false,
+   "target": "",
+   "watch": {
+    "change": 0.9,
+    "count": [],
+    "places": [
+     {
+      "camera": "",
+      "find": "",
+      "pointed": true
+     }
+    ],
+    "safety_s": 600,
+    "wake": "change"
+   }
+  }
+ ],
+ "unsupported": "",
+ "writer_steps": [
+  "Wonder is writing the rule",
+  "Wrote rule.py",
+  "Wrote test_rule.py",
+  "Ran python test_rule.py: passed",
+  "Tests passed",
+  "A reviewer is checking the rule against your words"
+ ]
+}

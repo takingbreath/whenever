@@ -1,0 +1,75 @@
+{
+ "sentence": "At night, tell me when a car drives into the driveway.",
+ "name": "Night driveway car alert",
+ "plan": [
+  "Watch the driveway cameras for a car driving in",
+  "At night, treat each entry as a new arrival, even if another car is parked",
+  "Check a single frame before attaching it as a picture",
+  "Send one alert per confirmed night arrival"
+ ],
+ "schedules": [],
+ "sensors": [
+  {
+   "check_every_s": 2,
+   "clear_after_s": 4,
+   "frames_per_check": 6,
+   "frames_per_second": 3,
+   "id": "car_driving_in",
+   "min_count": 1,
+   "min_motion": 8,
+   "outline": "car",
+   "pattern": "moment",
+   "question": "Is a car driving into the driveway in the Driveway or Driveway at night camera view, moving from the street or entrance further into the driveway?",
+   "reason": "Driving in takes about 3s to cross from the entrance to inside, so 3fps shows the progression and 2s checks rarely hold two entries; 4s clear is shorter than the ~6s gap between two cars following each other in.",
+   "requires": [
+    "A car is visible at the driveway entrance, on the street side of the driveway",
+    "The same car is visible further inside the driveway in a neighbouring frame"
+   ],
+   "shortest_event_s": 3,
+   "starts_off": false,
+   "target": "",
+   "watch": {
+    "places": [
+     {
+      "camera": "Driveway",
+      "find": "",
+      "pointed": false
+     },
+     {
+      "camera": "Driveway at night",
+      "find": "",
+      "pointed": false
+     }
+    ],
+    "wake": "count",
+    "count": [
+     "car"
+    ],
+    "change": 0.9,
+    "safety_s": 3600
+   }
+  }
+ ],
+ "unsupported": "",
+ "writer_steps": [
+  "Wonder is writing the rule",
+  "Ran ls -la; cat rule_runtime.py | head -n 200: passed",
+  "Wrote rule.py",
+  "Wrote test_rule.py",
+  "Ran python test_rule.py: passed",
+  "Tests passed",
+  "A reviewer is checking the rule against your words",
+  "Reviewer found: }[4] Fix: [WAIT ON THE WRONG THING] The `car_in_driveway` sensor is a state/presence sensor, not an arrival sensor. It fires once when the first car appears and stays on while any car remains, so a second car driving in while the first is still parked will never fire a new event \u2014 the rule cannot detect that arrival at all, and `ctx.state[\"active\"]` additionally ignores any duplicate 'on'. Presence is a proxy near the goal (driving in), not the goal itself.",
+  "Ran grep -n \"def check\\|def ask\\|self.checks\\|def replay\\|class : passed",
+  "Ran grep -n \"def notify\\|def draw\\|def show\" -A 12 rule_runtime.: passed",
+  "Wrote rule.py",
+  "Wrote test_rule.py",
+  "Ran python test_rule.py: passed",
+  "Tests passed",
+  "A reviewer is checking the rule against your words",
+  "Reviewer found: MISSING PART Fix: Reduce dedup window below the sensor's re-fire gap (clear_after 4s, ~6s between following cars) so a second car following ~6s behind is not dropped; dedup only the same frames re-reported within a couple of seconds.",
+  "Ran python - << 'PY'\nimport pathlib\np=pathlib.Path(\"rule.py\")\ns=: passed",
+  "Tests passed",
+  "A reviewer is checking the rule against your words"
+ ]
+}

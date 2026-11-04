@@ -1,0 +1,69 @@
+{
+ "sentence": "When a guest in the cafe raises a hand to call for service, alert the Waiter at once. If no staff member reaches that table within 1 minute, alert the Manager.",
+ "name": "Cafe Hand-Raise Alerts",
+ "plan": [
+  "Watch the Cafe for a seated guest raising a hand",
+  "Tie the alert to the raised-hand guest's table, or say the table is unknown",
+  "Alert the Waiter at once",
+  "Check whether an identified staff member reaches that table",
+  "Alert the Manager if no identified staff arrive within 1 minute"
+ ],
+ "schedules": [],
+ "sensors": [
+  {
+   "check_every_s": 1.0,
+   "clear_after_s": 4.0,
+   "frames_per_check": 3,
+   "frames_per_second": 3.0,
+   "id": "hand_raised",
+   "min_count": 1,
+   "min_motion": 0.0,
+   "outline": "hand",
+   "pattern": "state",
+   "question": "In the Cafe camera view, is a seated cafe guest raising a hand to call for service, with the hand at or above head height?",
+   "reason": "A deliberate hand raise lasts about 2s or more; 3 fps puts several frames inside it and 1s checks catch it promptly, with 4s to ride out a brief dip of the hand.",
+   "requires": [
+    "A person's hand is at or above the height of their head",
+    "That person is seated at a cafe table"
+   ],
+   "shortest_event_s": 2.0,
+   "starts_off": false,
+   "target": "",
+   "watch": {
+    "change": 0.9,
+    "count": [],
+    "places": [
+     {
+      "camera": "Cafe",
+      "find": "",
+      "pointed": false
+     }
+    ],
+    "safety_s": 600,
+    "wake": "change"
+   }
+  }
+ ],
+ "unsupported": "",
+ "writer_steps": [
+  "Wonder is writing the rule",
+  "Ran ls -la; cat rule_runtime.py | head -n 400: passed",
+  "Ran grep -n \"class Found\" -A 60 rule_runtime.py; grep -n \"def de: passed",
+  "Ran grep -n \"class Found\" rule_runtime.py; sed -n '380,550p' rul: passed",
+  "Ran sed -n '200,380p' rule_runtime.py: passed",
+  "Wrote rule.py",
+  "Ran sed -n '160,215p' rule_runtime.py; grep -n \"class Place\" -A : passed",
+  "Wrote test_rule.py",
+  "Ran python test_rule.py: passed",
+  "Tests passed",
+  "Reviewer rejected: That person's arm is extended upward from the shoulder (People can raise a hand with a bent elbow or wave; a fully extended upward arm is just one pose/style and would miss normal calls.)",
+  "Tests passed",
+  "A reviewer is checking the rule against your words",
+  "Reviewer found: WAIT ON THE WRONG THING Fix: Polling for a standing person is only a proxy for the actual goal: a staff member reaching the table. _staff_at_table returns any standing person at the table once they stay ~2s, even when ctx.who did not identify them as staff. A joining guest, a guest who stood up, or another visitor standing at the table therefore marks the job 'Staff at table', cancels the service wait, and suppresses the 1-minute Manager escalation even though no staff member ever reached the table. The wait must test staff arrival itself (e.g. identified staff identity/role at that table) and not standing-at-table alone.",
+  "Wrote rule.py",
+  "Wrote test_rule.py",
+  "Ran python test_rule.py: passed",
+  "Tests passed",
+  "A reviewer is checking the rule against your words"
+ ]
+}

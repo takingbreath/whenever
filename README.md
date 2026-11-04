@@ -24,6 +24,14 @@ Akhilesh Khajuria ([takingbreath](https://github.com/takingbreath)) built Whenev
 | Muse Image 1.0 | Made the test pictures in `testdata` |
 | Perception Encoder (PE-Core-S-16-384) | Meta's open model, run as int8 ONNX on the server's CPU, ranks saved moments for Ask and remembers how a tagged person looks, at no model cost |
 
+## Evidence
+
+- [docs/architecture.md](docs/architecture.md): one real rule from the sentence to the alert, with the model or local part at each stage and links to the code.
+- [examples/](examples): three rules that Wonder wrote, with Wonder's own tests and independent tests. `python3 examples/run_examples.py` runs them with no API call.
+- [eval/README.md](eval/README.md): the evaluation against a motion baseline.
+- [eval/cost-results.md](eval/cost-results.md): what writing and running rules costs, marked as measured or estimated.
+- [docs/deployment-evidence.md](docs/deployment-evidence.md): the builder's own installation on five real cameras, the problems it showed, and what we changed.
+
 ## Try the demo
 
 1. Open <https://demo.4-240-49-230.sslip.io> and type the access code.
