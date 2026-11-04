@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,7 @@ import actions
 import ask
 import detect
 import embed
+import live
 import moments
 import people
 import sandbox
@@ -413,6 +415,68 @@ def grid(box):
     return [box["x1"] * 1000 // box["w"], box["y1"] * 1000 // box["h"],
             box["x2"] * 1000 // box["w"], box["y2"] * 1000 // box["h"]]
 OUTLINE_FIELDS = ("x1", "y1", "x2", "y2", "w", "h", "path", "mask_w", "mask_h")
+
+
+ALERT_DATA_BYTES = 8_000
+SUBJECT_GLOW = (255, 196, 64)
+
+
+def fit_values(values, limit):
+    """An alert's journal values within limit bytes: the story goes first, then the evidence words."""
+    def size(v):
+        return len(json.dumps(v, ensure_ascii=False, default=str).encode())
+    if size(values) <= limit:
+        return values
+    values = dict(values)
+    while values.get("story") and size(values) > limit:
+        values["story"] = values["story"][1:]
+    for person in values.get("people") or []:
+        if size(values) > limit:
+            person["evidence"] = person.get("evidence", [])[:1]
+    while values.get("people") and size(values) > limit:
+        values["people"] = values["people"][:-1]
+    return values
+
+
+def svg_polygons(path, width, height, most=400):
+    """The outlines in an SVG path from SAM (M x y L x y ... Z), as lists of (x, y) from 0 to 1. A long
+    outline keeps every few points, which is enough to draw it."""
+    polygons = []
+    for part in re.findall(r"M[^M]*", str(path or "")):
+        numbers = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", part)]
+        points = [(x / max(width, 1), y / max(height, 1)) for x, y in zip(numbers[::2], numbers[1::2])]
+        if len(points) >= 8:
+            step = max(1, len(points) // most)
+            polygons.append(points[::step])
+    return sorted(polygons, key=len, reverse=True)[:4]
+
+
+def glow(picture, shape, region=None):
+    """Draws a soft glowing outline of one subject on a PIL picture, in place. shape is ("mask", polygons)
+    from SAM or ("box", box), each from 0 to 1 in region, a part of the picture in pixels (all of it by
+    default). A box gets a rounded frame with some room around it."""
+    left, top, right, bottom = region or (0, 0, picture.width, picture.height)
+    w, h = right - left, bottom - top
+    width = max(2, round(min(w, h) * 0.008))
+    halo = Image.new("L", picture.size, 0)
+    line = Image.new("L", picture.size, 0)
+    for layer, thick in ((halo, width * 4), (line, width)):
+        draw = ImageDraw.Draw(layer)
+        if shape[0] == "mask":
+            for polygon in shape[1]:
+                points = [(left + x * w, top + y * h) for x, y in polygon]
+                draw.line(points + points[:1], fill=255, width=thick, joint="curve")
+        else:
+            x1, y1, x2, y2 = shape[1]
+            pad = 0.06 * max(x2 - x1, y2 - y1)
+            box = (left + (x1 - pad) * w, top + (y1 - pad) * h, left + (x2 + pad) * w, top + (y2 + pad) * h)
+            draw.rounded_rectangle(box, radius=max(4, round(0.12 * min(box[2] - box[0], box[3] - box[1]))),
+                                   outline=255, width=thick)
+    halo = halo.filter(ImageFilter.GaussianBlur(width * 3)).point(lambda v: min(255, int(v * 1.4)))
+    colour = Image.new("RGB", picture.size, SUBJECT_GLOW)
+    picture.paste(colour, (0, 0), halo)
+    picture.paste(Image.new("RGB", picture.size, (255, 244, 214)), (0, 0), line)
+    return picture
 
 
 def number(value, low, high, default):
@@ -904,7 +968,7 @@ class Rule:
         elif kind == "notify":
             actions.run({"action": kind, "text": message["text"]})
             self.app.notify(self, message["text"], message.get("picture"), message.get("check"), message.get("at"),
-                            message.get("to"))
+                            message.get("to"), message.get("subject"))
         elif kind == "say":
             actions.run({"action": kind, "text": message["text"]})
             self.app.add_feed(self, kind, message["text"], url=self.app.picture_url(self, message.get("picture")))
@@ -993,6 +1057,8 @@ class App:
         self.people = people.People(DATA_DIR / "people" if phone_file else Path(logs_dir) / "people", self.embedder)
         self.moments = moments.Moments(DATA_DIR / "moments.db" if phone_file else Path(logs_dir) / "moments.db",
                                        self.embedder, self._moment_picture, lambda: self.wall, self._moment_busy)
+        # The free live analyzer: boxes, names, timers and tables for the page. It starts in main().
+        self.analyzer = live.Analyzer(self, DATA_DIR / "live" if phone_file else Path(logs_dir) / "live", ZONE)
         self.voices = {}
         self.open_voice = VoiceSession
         self.hold_until = 0.0
@@ -1135,8 +1201,11 @@ class App:
             values = {k: v for k, v in (("picture", picture), ("check", extra.get("check")), ("clip", extra.get("clip")),
                                         ("cameras", extra.get("cameras")), ("occurrence", occurrence),
                                         ("pictures", pictures), ("places", extra.get("places")),
-                                        ("mode", extra.get("mode")), ("sent_at", extra.get("sent_at"))) if v}
-            self.journal.add(kind, rule.id, rule.name, text=text, values=values)
+                                        ("mode", extra.get("mode")), ("sent_at", extra.get("sent_at")),
+                                        ("people", extra.get("people")), ("story", extra.get("story"))) if v}
+            # An alert with its people and story needs more room than a rule's own record.
+            self.journal.add(kind, rule.id, rule.name, text=text, values=fit_values(values, ALERT_DATA_BYTES),
+                             limit=ALERT_DATA_BYTES)
         return item
 
     def occurrence_of(self, rule, check=None, at=None):
@@ -1751,6 +1820,8 @@ class App:
                 "stopped": self.stopped(),
                 "problems": [{k: g[k] for k in ("id", "level", "source", "title", "hint", "rule_id", "count", "last")}
                              for g in self.problems.open()],
+                # The free live analyzer: cameras it read in the last 30 s, and looks a second.
+                "analyzer": self.analyzer.status(),
             }
 
     def start_job(self, sentence, example, idle, motions=None, gap_s=None, point=None, edit=None):
@@ -2329,25 +2400,27 @@ class App:
         except ValueError as e:
             self.trouble(rule, f"{rule.name} could not keep a record", str(e), source="Journal", level="warn")
 
-    def notify(self, rule, text, picture=None, check=None, at=None, to=None):
+    def notify(self, rule, text, picture=None, check=None, at=None, to=None, subject=None):
         """ctx.notify: the page and every paired place get the cameras where it happened, and a clip.
         Cutting the cameras and making the clip take a moment, so this runs beside the rule. to names the
-        places to send it to, such as "Waiter"."""
-        self._later(self._notify, rule, text, picture, check, at, to)
+        places to send it to, such as "Waiter". subject, {"camera", "box"}, is the one thing it is about,
+        such as a Found that the rule passed as its picture: the picture outlines it."""
+        self._later(self._notify, rule, text, picture, check, at, to, subject)
 
-    def _notify(self, rule, text, picture, check=None, at=None, to=None):
+    def _notify(self, rule, text, picture, check=None, at=None, to=None, subject=None):
         occurrence = self.occurrence_of(rule, check, at) or (self.occurrence_near(rule, picture) if picture else None)
         if self.repeated(occurrence, f"{to or ''}:{text}"):
             return
         try:
-            media = self.alert_media(rule, picture, occurrence, clip=False)
+            media = self.alert_media(rule, picture, occurrence, clip=False, subject=subject)
         except (ValueError, OSError) as e:
             media = {"picture": None, "url": self.picture_url(rule, picture), "cameras": []}
             self.trouble(rule, f"{rule.name} could not cut its picture", str(e)[:300], source="Alerts", level="note")
+        seen = self._alert_people(media, text, to)
         # A later note about an occurrence that already alerted, with nothing new to see, stays on the page.
         news = bool(picture) or not (occurrence and occurrence in self.threads)
         if news:
-            self.add_feed(rule, "alert", text, url=media["url"], cameras=media["cameras"], occurrence=occurrence)
+            self.add_feed(rule, "alert", text, url=media["url"], cameras=media["cameras"], occurrence=occurrence, **seen)
         places, how = [], "here"
         try:
             places, how = self._deliver(rule, occurrence, text, self._alert_title(rule, media), media, news, to)
@@ -2357,7 +2430,23 @@ class App:
             self.alert_clip(rule, media)
         self.add_feed(rule, "notify", text, url=media["url"], clip=media.get("clip_url"), cameras=media["cameras"],
                       occurrence=occurrence, places=[p["label"] for p in places if p["ok"]], mode=how,
-                      sent_at=round(media.get("sent_at") or 0, 1) or None)
+                      sent_at=round(media.get("sent_at") or 0, 1) or None, **seen)
+
+    def _alert_people(self, media, text, to=None):
+        """What the live analyzer saw around an alert: {"people", "story"} for the page, or {}. An alert to
+        named places while a hand is up marks that person as told."""
+        when = media.get("when") or time.time()
+        cameras = media.get("cameras") or []
+        try:
+            if to:
+                self.analyzer.told(to, cameras, when)
+            seen = self.analyzer.alert_people(cameras, when)
+            self.analyzer.note_alert(cameras, text, when)
+        except (OSError, ValueError, sqlite3.Error) as e:
+            self.problems.add("analyzer:alert", "The live analyzer could not add people to an alert", "note",
+                              "Live", str(e)[:300], "The alert went out without them.")
+            return {}
+        return {key: value for key, value in seen.items() if value}
 
     def alert(self, rule, text, picture=None):
         """An alert from the server itself, such as a test. Rules use notify."""
@@ -2379,12 +2468,16 @@ class App:
                 tiles.append(self.cameras.index(name))
         return tiles[:MAX_FOCUS] if len(tiles) < len(self.cameras) else []
 
-    def camera_picture(self, name, tiles):
+    def camera_picture(self, name, tiles, mark=None):
         """One moment of the cameras that matter, side by side. Each is its own full frame when one was
-        kept, or its tile of the sharp wall. Returns a PIL picture, or None."""
+        kept, or its tile of the sharp wall. mark, (tile, shape), outlines one subject in that camera.
+        Returns a PIL picture, or None."""
         sharp = self.evidence.read_sharp(name)
         wall = Image.open(BytesIO(sharp)).convert("RGB") if sharp else None
         if not tiles:
+            if wall is not None and mark:
+                region = self._tile_box(wall.size, mark[0]) if len(self.cameras) > 1 else None
+                glow(wall, mark[1], region)
             return wall
         pictures = []
         for tile in tiles:
@@ -2393,6 +2486,10 @@ class App:
                 pictures.append(Image.open(full).convert("RGB"))
             elif wall is not None:
                 pictures.append(wall.crop(self._tile_box(wall.size, tile)))
+            else:
+                continue
+            if mark and mark[0] == tile:
+                glow(pictures[-1], mark[1])
         if not pictures:
             return wall
         height = min(CLIP_HEIGHT, max(p.height for p in pictures))
@@ -2488,7 +2585,64 @@ class App:
         (target / name).write_bytes(clip)
         return clip, f"/rule-file/{rule.id}/clips/{name}"
 
-    def alert_media(self, rule, picture=None, occurrence=None, clip=True):
+    def alert_outline(self, name, tile, box):
+        """The shape of one subject in one camera's picture of a frame, for its glow: ("mask", polygons)
+        from one SAM call with the box as its prompt, or ("box", box) when SAM gives no outline or spending
+        is paused. Each point is from 0 to 1 in that camera's picture."""
+        box = tuple(float(v) for v in box)
+        if self.stopped():
+            return ("box", box)
+        source = self._camera_source(name, tile)
+        if source is None:
+            return ("box", box)
+        width, height = source.size
+        prompt = {"x1": round(box[0] * width), "y1": round(box[1] * height),
+                  "x2": round(box[2] * width), "y2": round(box[3] * height)}
+        with self.lock:
+            self.see_calls += 1
+        try:
+            found = [item for item in self.client.mark(jpeg_bytes(source, 90), width, height, box=prompt) if item.get("path")]
+        except (ApiError, OSError, ValueError):
+            return ("box", box)
+        if not found:
+            return ("box", box)
+
+        def cover(item):
+            w, h = item.get("w") or width, item.get("h") or height
+            return share_inside(box, (item["x1"] / w, item["y1"] / h, item["x2"] / w, item["y2"] / h))
+        best = max(found, key=cover)
+        polygons = svg_polygons(best["path"], best.get("mask_w") or width, best.get("mask_h") or height)
+        return ("mask", polygons) if polygons else ("box", box)
+
+    def _subject_mark(self, subject, name, tiles, cameras, when):
+        """(tile, shape) of an alert's subject: the Found a rule passed, or else the one person whom the live
+        analyzer clearly sees it is about, such as the only raised hand. None when nothing is clear."""
+        if not name:
+            return None
+        if subject and subject.get("box"):
+            camera, box = str(subject.get("camera") or ""), subject["box"]
+        else:
+            found = self.analyzer.alert_subject(cameras, when)
+            if not found:
+                return None
+            camera, box = found
+        if camera in self.cameras:
+            tile = self.cameras.index(camera)
+        elif len(self.cameras) <= 1:
+            tile = 0
+        else:
+            return None
+        if tiles and tile not in tiles:
+            return None
+        try:
+            box = [number(v, 0, 1, 0) for v in list(box)[:4]]
+        except (TypeError, ValueError):
+            return None
+        if len(box) < 4 or box[2] - box[0] < 0.005 or box[3] - box[1] < 0.005:
+            return None
+        return tile, self.alert_outline(name, tile, box)
+
+    def alert_media(self, rule, picture=None, occurrence=None, clip=True, subject=None):
         """What an alert shows: only the cameras where it happened, as a picture and a clip.
 
         The alert's own occurrence says which camera fired and when, even minutes later or after a
@@ -2507,7 +2661,8 @@ class App:
             name = Path(str(picture)).name if self.evidence.frame_path(self.evidence.session, Path(str(picture)).name) else None
         name = name or (event or {}).get("frame")
         media = {"picture": None, "url": self.picture_url(rule, picture), "cameras": cameras}
-        chosen = self.camera_picture(name, tiles) if name else None
+        mark = self._subject_mark(subject, name, tiles, cameras, (event or {}).get("t") or time.time())
+        chosen = self.camera_picture(name, tiles, mark) if name else None
         if chosen is None and picture:
             media["picture"] = self._picture(rule, picture)
             return media
@@ -2870,10 +3025,11 @@ class App:
                 continue
             box = tuple(number(v, 0, 1, 0) for v in (list(item.get("box") or []) + [0, 0, 1, 1])[:4])
             found = self.people.read(picture, box, look=bool(look))
-            match = self.people.match(found)
+            match = self.people.match(found, camera=key[1])
             if match:
                 self.people.saw(match, found, key[1], where=key[0])
-            answers.append({**(match or {}), "face": found["face"] is not None, "face_size": round(found["face_size"])})
+            answers.append({**{k: v for k, v in (match or {}).items() if k not in ("visitor", "visits")},
+                            "face": found["face"] is not None, "face_size": round(found["face_size"])})
         named = [a["name"] for a in answers if a and a.get("name")]
         if check:
             self._step(rule, check, {"model": "local", "question": "who", "answer": ", ".join(named) or "nobody tagged"},
@@ -2895,7 +3051,7 @@ class App:
     def _rule_people(self, rule, check=None):
         return self.people.public()
 
-    def tag_from_page(self, url, name, note="", box=None):
+    def tag_from_page(self, url, name, note="", box=None, role=None):
         """Tags the person in a picture that the page shows, such as a gallery picture of a visitor. With no
         box, it is the largest person in the picture."""
         if not people.available():
@@ -2908,7 +3064,7 @@ class App:
             found = detect.detect(data, ["person"], 0.3)
             if found:
                 box = max(found, key=lambda f: (f["box"][2] - f["box"][0]) * (f["box"][3] - f["box"][1]))["box"]
-        return self.people.tag(name, picture, box, note, by="person")
+        return self.people.tag(name, picture, box, note, by="person", role=role)
 
     def page_picture(self, url):
         """The bytes of a picture by the address that the page shows it at, or None."""
@@ -2931,6 +3087,36 @@ class App:
             file = file or self.evidence.sharp_path(parts[3], parts[2])
             return file.read_bytes() if file else None
         return None
+
+    # ----- The live analyzer's people pages -----
+
+    def person_file(self, person_id, name):
+        """The page address of a picture in a person's or visitor's folder, or None."""
+        return f"/people-file/{person_id}/{quote(str(name))}" if name else None
+
+    def people_today(self):
+        """The tagged people and visitors seen today, in the server's time zone, the latest first."""
+        start = datetime.now(ZONE).replace(hour=0, minute=0, second=0, microsecond=0)
+        groups = self.people.today(start.timestamp(), (start + timedelta(days=1)).timestamp())
+        for group in groups:
+            group["face"] = self.person_file(group["id"], group.pop("picture"))
+        return {"groups": groups}
+
+    def person_page(self, person_id):
+        """One person's or visitor's visits over 30 days, how long they stay, and their newest sightings."""
+        page = self.people.page(person_id, time.time(), lambda t: datetime.fromtimestamp(t, ZONE).date().isoformat())
+        if page is None:
+            return None
+        person = dict(page["person"])
+        person["picture"] = self.person_file(person_id, person.get("picture"))
+        last = page["last"]
+        if last:
+            last = dict(last, picture=self.person_file(person_id, last.get("picture")) or person["picture"])
+        sightings = [{"id": s.get("id"), "t": s["t"], "camera": s.get("camera") or "",
+                      "picture": self.person_file(person_id, s.get("picture")) or person["picture"],
+                      "sure": s.get("sure"), "by": s.get("by"), "checked": s.get("checked")} for s in page["sightings"]]
+        return {"person": person, "visits": page["visits"], "avg_stay_min": page["avg_stay_min"], "last": last,
+                "sightings": sightings}
 
     def _rule_find(self, rule, thing, frame=None, check=None):
         rule.allow_call()
@@ -4104,6 +4290,73 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.rfile.read(length)
 
+    # ----- The live analyzer and the people pages: overlay, history, people, search, heat, floor -----
+
+    @staticmethod
+    def _params(query):
+        return {k: unquote(v) for k, v in (part.split("=", 1) for part in query.split("&") if "=" in part)}
+
+    def _live_get(self, path, query):
+        """Answers the GET routes of the live analyzer and the people pages. Returns True if it answered."""
+        app, params, now = self.app, self._params(query), time.time()
+        if path == "/api/overlay":
+            names = [name for name in params.get("cameras", "").split(",") if name]
+            self._json(200, app.analyzer.overlay(names, number(params.get("after"), 0, 1e11, None)))
+        elif path == "/api/overlay/history":
+            camera = params.get("camera") or (app.cameras[0] if app.cameras else "Camera")
+            start = number(params.get("from"), 0, 1e11, now - 60)
+            end = number(params.get("to"), 0, 1e11, now)
+            self._json(200, app.analyzer.history(camera, start, min(end, start + 86400)))
+        elif path == "/api/people/today":
+            self._json(200, app.people_today())
+        elif path == "/api/people/search":
+            try:
+                results = app.analyzer.search(params.get("q", ""), number(params.get("hours"), 0.1, 48, 24))
+            except ValueError as e:
+                self._json(422, {"error": str(e)})
+                return True
+            self._json(200, {"results": results})
+        elif path.startswith("/api/people/") and path.endswith("/page") and len(path.split("/")) == 5:
+            page = app.person_page(unquote(path.split("/")[3]))
+            self._json(200 if page else 404, page or {"error": "Not found."})
+        elif path == "/api/heat":
+            camera = params.get("camera") or (app.cameras[0] if app.cameras else "Camera")
+            self._json(200, app.analyzer.heat(camera, number(params.get("hours"), 0.05, 24, 1)))
+        elif path == "/api/floor":
+            self._json(200, app.analyzer.floor())
+        elif path.startswith("/live-file/"):
+            file = app.analyzer.file(unquote(path[len("/live-file/"):]))
+            if file:
+                self._send(200, file.read_bytes(), "image/jpeg")
+            else:
+                self._json(404, {"error": "Not found."})
+        else:
+            return False
+        return True
+
+    def _live_post(self):
+        """Answers the POST routes of the people pages: an answer on a sighting, and a merge. True if it did."""
+        parts = self.path.split("/")
+        if self.path == "/api/people/merge":
+            body = json.loads(self._read(MAX_LABEL_BYTES) or b"{}")
+            try:
+                person = self.app.people.merge(str(body.get("from") or ""), str(body.get("into") or ""))
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return True
+            self._json(200, {"person": person})
+        elif len(parts) == 5 and parts[1:3] == ["api", "people"] and parts[4] == "confirm":
+            body = json.loads(self._read(MAX_LABEL_BYTES) or b"{}")
+            try:
+                person = self.app.people.confirm(unquote(parts[3]), str(body.get("sighting") or ""), bool(body.get("yes")))
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return True
+            self._json(200, {"person": person})
+        else:
+            return False
+        return True
+
     def do_GET(self):
         if not self._allowed():
             return self._json(403, {"error": "Forbidden."})
@@ -4163,9 +4416,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"rows": rows})
         if path == "/api/problems":
             return self._json(200, self.app.problems.public())
+        if self._live_get(path, query):
+            return
         if path == "/api/people":
             return self._json(200, {"people": self.app.people.public(), "ready": people.available(),
-                                    "model": people.FACE_MODEL})
+                                    "model": people.FACE_MODEL, "visitors": len(self.app.people.visitors)})
         if path.startswith("/people-file/"):
             parts = unquote(path).split("/")
             folder = self.app.people.folder / parts[2] if len(parts) == 4 and parts[2].isalnum() else None
@@ -4282,21 +4537,28 @@ class Handler(BaseHTTPRequestHandler):
                 self.app.claim(str(claim.get("page"))[:40], names, list(claim.get("controls") or []), wall, streams)
                 self.app.camera_kinds.set_makes(dict(zip(names, makes)))
                 return self._json(200, {"active": True})
+            if self._live_post():
+                return
             if self.path == "/api/people":
                 body = json.loads(self._read(MAX_JSON_BYTES) or b"{}")
                 try:
-                    person = self.app.tag_from_page(body.get("picture"), body.get("name"), body.get("note") or "",
-                                                    body.get("box"))
+                    if body.get("visitor"):
+                        person = self.app.people.name_visitor(str(body["visitor"]), body.get("name"),
+                                                              body.get("role") or "", body.get("note") or "")
+                    else:
+                        person = self.app.tag_from_page(body.get("picture"), body.get("name"), body.get("note") or "",
+                                                        body.get("box"), body.get("role"))
                 except ValueError as e:
                     return self._json(400, {"error": str(e)})
                 return self._json(200, {"person": person})
             if self.path.startswith("/api/people/"):
                 body = json.loads(self._read(MAX_JSON_BYTES) or b"{}")
                 try:
-                    person = self.app.people.rename(self.path.split("/")[3], body.get("name"), body.get("note"))
+                    person = self.app.people.rename(self.path.split("/")[3], body.get("name"), body.get("note"),
+                                                    body.get("role"))
                 except ValueError as e:
                     return self._json(400, {"error": str(e)})
-                return self._json(200, {"person": {k: person[k] for k in ("id", "name", "note")}})
+                return self._json(200, {"person": {k: person[k] for k in ("id", "name", "note", "role")}})
             if self.path == "/api/camera":
                 return self._json(200, self.app.camera_command(json.loads(self._read(MAX_LABEL_BYTES))))
             if self.path == "/api/rule" or (self.path.startswith("/api/rule/") and self.path.endswith("/edit")):
@@ -4422,8 +4684,12 @@ class Handler(BaseHTTPRequestHandler):
             if self.path.startswith("/api/places/") and self.path.endswith("/name"):
                 body = json.loads(self._read(MAX_LABEL_BYTES) or b"{}")
                 try:
+                    # A table of the live analyzer, such as "cafe-t3", or else a place where alerts go.
+                    table = self.app.analyzer.rename_place(unquote(self.path.split("/")[3]), body.get("name"))
+                    if table:
+                        return self._json(200, {"place": table})
                     place = self.app.channels.rename(unquote(self.path.split("/")[3]), body.get("name"))
-                except ChannelError as e:
+                except (ChannelError, ValueError) as e:
                     return self._json(400, {"error": str(e)})
                 return self._json(200, {"place": place})
             if self.path.startswith("/api/places/") and self.path.endswith("/test"):
@@ -4508,6 +4774,8 @@ def main():
     if back:
         print(f"{back} rules are back after the restart.", flush=True)
     Handler.app.start_ticks()
+    if Handler.app.analyzer.start():
+        print("The live analyzer runs.", flush=True)
     threading.Thread(target=Handler.app.telegram_loop, daemon=True).start()
     if Handler.app.moments.start():
         app = Handler.app

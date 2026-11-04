@@ -198,6 +198,148 @@ class Alerts(unittest.TestCase):
         self.assertTrue(any("Manager" in g["title"] for g in self.app.problems.open()))
 
 
+def mixed(a, b, score):
+    """A unit vector whose likeness to identity a's own face is score, and the rest is identity b."""
+    vector = np.zeros(512, np.float32)
+    vector[a] = score
+    vector[b] = (1 - score ** 2) ** 0.5
+    return vector
+
+
+class MixedFaces(FakeFaces):
+    """Pixel 3 holds a likeness in hundredths and pixel 4 another identity: the face is that much like the
+    identity in pixel 0. Pixel 5 is the face's size in pixels (40 when it is 0)."""
+
+    def find(self, picture, box=None):
+        if not picture[0, 0, 0]:
+            return None
+        return {"row": [0.0] * 15, "size": float(picture[0, 5, 0] or 40), "score": 0.9}
+
+    def vector(self, picture, face):
+        if picture[0, 3, 0]:
+            return mixed(int(picture[0, 0, 0]), int(picture[0, 4, 0]), picture[0, 3, 0] / 100)
+        return super().vector(picture, face)
+
+
+def like(identity, score, other=200, size=0, clothes=1):
+    pic = picture(identity, clothes=clothes)
+    pic[0, 3, 0], pic[0, 4, 0], pic[0, 5, 0] = round(score * 100), other, size
+    return pic
+
+
+class Sure(unittest.TestCase):
+    """How sure a face match is: the measured curve, made careful, and moved by this site's answers."""
+
+    def test_the_curve_is_careful_and_never_certain(self):
+        self.assertLess(people.sure_of(0.20), 0.02)
+        self.assertAlmostEqual(people.sure_of(0.275), 0.5, places=2)
+        for score in (0.30, 0.32, 0.34, 0.355):
+            self.assertLessEqual(people.sure_of(score), 0.78)   # the middle band stops near 0.75
+        self.assertGreaterEqual(people.sure_of(0.37), 0.95)
+        self.assertEqual(people.sure_of(0.9), 0.99)
+        scores = [people.sure_of(s / 100) for s in range(15, 60)]
+        self.assertEqual(scores, sorted(scores))
+        self.assertLess(people.sure_of(0.33, face_px=16), people.sure_of(0.33, face_px=40))
+        self.assertLess(people.sure_of(0.45, kind="sface"), 0.9)
+
+    def test_answers_move_the_curve_and_looks_combine(self):
+        before = people.sure_of(0.33)
+        self.assertLess(people.sure_of(0.33, counts=(0, 20)), before * 0.6)
+        self.assertGreater(people.sure_of(0.33, counts=(20, 0)), before)
+        self.assertEqual(people.combine([0.5, 0.5]), 0.75)
+        self.assertEqual(people.combine([0.9, 0.9, 0.9]), 0.99)
+
+
+class Visitors(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.folder)
+        self.now = 1_000_000.0
+        self.book = people.People(self.folder, FakeLooks(), MixedFaces(), clock=lambda: self.now)
+
+    def read(self, pic):
+        return self.book.read(pic, None)
+
+    def test_a_match_carries_sure_role_and_size_and_a_weak_one_names_nobody(self):
+        self.book.tag("Asha", picture(7), role="staff")
+        match = self.book.match(self.read(like(7, 0.5)))
+        self.assertEqual((match["name"], match["role"], match["person_id"], match["by"]), ("Asha", "staff", match["id"], "face"))
+        self.assertEqual((match["sure"], match["face_px"]), (0.99, 40))
+        self.assertAlmostEqual(self.book.match(self.read(like(7, 0.33)))["sure"], people.sure_of(0.33, 40), places=3)
+        self.assertIsNone(self.book.match(self.read(like(7, 0.27))))
+        with self.assertRaises(ValueError):
+            self.book.rename(match["id"], role="boss")
+        self.assertEqual(self.book.rename(match["id"], role="vip")["role"], "vip")
+
+    def test_a_clear_stranger_becomes_a_visitor_known_again_with_visits(self):
+        self.book.tag("Asha", picture(7))
+        first = self.book.identify(self.read(picture(9)), "Door", clear=True)
+        self.assertEqual((first["visitor"], first["name"], first["role"]), ("Visitor 1", "Visitor 1", ""))
+        self.book.saw(first, self.read(picture(9)), "Door")
+        self.assertIsNone(self.book.match(self.read(picture(9))))   # never a tagged person
+        self.now += 3 * 3600
+        again = self.book.identify(self.read(picture(9, wobble=3, seed=4)), "Door", clear=True)
+        self.assertEqual(again["id"], first["id"])
+        self.book.saw(again, self.read(picture(9, wobble=3, seed=4)), "Door")
+        self.assertEqual(self.book.public_visitors()[0]["visits"], 2)
+        self.assertIsNone(self.book.identify(self.read(picture(11)), "Door", clear=False))   # not clear enough
+        self.assertIsNone(self.book.identify(self.read(like(9, 0.3)), "Door", clear=True))   # in between: nobody
+        self.assertEqual(len(self.book.visitors), 1)
+        self.now += 31 * 86400
+        self.book.identify(self.read(picture(12)), "Door", clear=True)
+        self.assertEqual([v["name"] for v in self.book.visitors], ["Visitor 2"])   # Visitor 1 was forgotten
+
+    def test_naming_a_visitor_keeps_its_faces_and_sightings_and_merge_joins_two(self):
+        visitor = self.book.identify(self.read(picture(9)), "Door", clear=True)
+        self.book.saw(visitor, self.read(picture(9)), "Door")
+        named = self.book.rename(visitor["id"], name="Ravi", role="regular")
+        self.assertEqual((named["kind"], named["name"], named["role"], named["times_seen"]), ("person", "Ravi", "regular", 1))
+        self.assertEqual(self.book.match(self.read(picture(9)))["name"], "Ravi")
+        other = self.book.identify(self.read(picture(10)), "Gate", clear=True)
+        merged = self.book.merge(other["id"], named["id"])
+        self.assertEqual(merged["name"], "Ravi")
+        self.assertEqual(self.book.match(self.read(picture(10)))["name"], "Ravi")
+        self.assertEqual(self.book.visitors, [])
+
+    def test_no_on_a_sighting_stops_that_face_and_counts_for_the_site(self):
+        self.book.tag("Asha", picture(7))
+        wrong = self.read(like(7, 0.34, other=30))
+        match = self.book.match(wrong)
+        sighting = self.book.saw(match, wrong, "Door")
+        self.book.confirm(match["id"], sighting, False)
+        self.assertIsNone(self.book.match(self.read(like(7, 0.34, other=30))))
+        self.assertEqual(self.book.calibration["arcface"]["2"], [0, 1])
+        right = self.read(like(7, 0.6))
+        match = self.book.match(right)
+        self.book.confirm(match["id"], self.book.saw(match, right, "Gate"), True)
+        self.assertEqual(self.book.calibration["arcface"]["3"], [1, 0])
+        self.assertEqual(self.book.public()[0]["faces"], 2)
+        with self.assertRaises(ValueError):
+            self.book.confirm(match["id"], "nope", True)
+
+    def test_clothes_carry_a_name_only_after_a_face_today_and_less_surely(self):
+        self.book.tag("Asha", picture(7, clothes=40))
+        back = picture(0, clothes=40)
+        found = self.book.read(back, None)
+        self.assertEqual(self.book.match(found, camera="Gate")["sure"], round(0.99 * people.LOOK_OTHER_CAMERA, 3))
+        face = self.read(picture(7, wobble=2, seed=3, clothes=40))
+        self.book.saw(self.book.match(face, camera="Gate"), face, "Gate")
+        self.assertEqual(self.book.match(found, camera="Gate")["sure"], round(0.99 * people.LOOK_SAME_CAMERA, 3))
+
+    def test_today_and_a_persons_page(self):
+        self.book.tag("Asha", picture(7))
+        for hours, camera in ((0, "Door"), (0.2, "Floor"), (2, "Door")):
+            self.now = 1_000_000.0 + hours * 3600
+            found = self.read(picture(7, wobble=2, seed=int(hours * 10)))
+            self.book.saw(self.book.match(found), found, camera)
+        groups = self.book.today(1_000_000.0 - 10, 1_000_000.0 + 86400)
+        self.assertEqual((groups[0]["name"], groups[0]["count"], groups[0]["cameras"]), ("Asha", 3, ["Door", "Floor"]))
+        page = self.book.page(groups[0]["id"], self.now, day=lambda t: "d")
+        self.assertEqual(page["visits"], [{"day": "d", "count": 2, "minutes": 13}])
+        self.assertEqual(len(page["sightings"]), 3)
+        self.assertEqual(page["sightings"][0]["camera"], "Door")
+
+
 @unittest.skipUnless(people.available(), "the face models are not here")
 class RealFaces(unittest.TestCase):
     def test_no_face_in_a_plain_picture(self):

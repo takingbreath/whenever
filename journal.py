@@ -34,12 +34,14 @@ class Journal:
             self.db.execute("CREATE INDEX IF NOT EXISTS by_time ON entries (t)")
             self.db.commit()
 
-    def add(self, kind, rule_id="", rule="", name="", seconds=None, text="", values=None, t=None):
+    def add(self, kind, rule_id="", rule="", name="", seconds=None, text="", values=None, t=None, limit=MAX_DATA_BYTES):
+        """limit is for the server's own rows, such as an alert with its people. A rule's record keeps the
+        smaller default."""
         if kind not in KINDS:
             raise ValueError(f"The journal has no kind {kind}.")
         data = json.dumps(values or {}, ensure_ascii=False, default=str)
-        if len(data.encode()) > MAX_DATA_BYTES:
-            raise ValueError(f"A record can hold {MAX_DATA_BYTES} bytes.")
+        if len(data.encode()) > limit:
+            raise ValueError(f"A record can hold {limit} bytes.")
         with self.lock:
             self.db.execute(
                 "INSERT INTO entries (t, rule_id, rule, kind, name, seconds, text, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
