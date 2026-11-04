@@ -1994,6 +1994,12 @@ button.ask-chip { padding: 0 12px 0 9px; cursor: pointer; }
 
 /* Live overlay. The analyzer's view is drawn on a canvas over the picture. The numbers sit in a dark band
    above it and the last hour below it, so the picture itself stays free for pointing. */
+.demo-hello { margin: 0 0 14px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); }
+.demo-hello-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.demo-hello h2 { margin: 0; font-size: 17px; line-height: 1.3; }
+.demo-hello p { margin: 6px 0 10px; color: var(--ink-2); font-size: 14px; line-height: 1.45; }
+.demo-hello ul { display: grid; gap: 6px; margin: 0; padding: 0 0 0 18px; color: var(--ink-2); font-size: 14px; line-height: 1.45; }
+.demo-hello b { color: var(--ink); }
 .demo-pill { padding: 5px 11px; border-radius: 999px; background: var(--surface-2); color: var(--ink-3); font-size: 13px; font-weight: 700; white-space: nowrap; }
 .view-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; min-width: 0; }
 .camera-chips { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; padding: 2px; overflow-x: auto; scrollbar-width: none; }

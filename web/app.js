@@ -4239,6 +4239,11 @@ function store(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
+// True when this device saved a choice for the key, even the choice "none".
+function chosenBefore(key) {
+  try { return localStorage.getItem(key) !== null; } catch { return false; }
+}
+
 const hud = {
   layers: { people: true, names: true, tables: true, trails: true, heat: false, clean: false, ...stored("whenever-hud", {}) },
   camera: stored("whenever-camera", null),   // the camera shown large, or null for the whole wall
@@ -4373,6 +4378,11 @@ function renderHud() {
 function renderViewBar(force) {
   const names = state?.cameras || [];
   if (hud.camera && names.length && !names.includes(hud.camera)) hud.camera = null;
+  // A demo opens on its busiest camera, so a first visitor sees the overlay large, not six small tiles.
+  if (state?.demo && !hud.demoPicked && !chosenBefore("whenever-camera") && names.includes("Cafe")) {
+    hud.demoPicked = true;
+    hud.camera = "Cafe";
+  }
   const sites = Object.keys(state?.sites || {}).length ? state.sites : null;
   const pick = liveCamera && names.length > 1 && !cameraMode;
   const views = hud.ok && hasPlaces();
@@ -4416,6 +4426,11 @@ function renderViewBar(force) {
   $("view-pick").querySelectorAll("button").forEach((b) =>
     b.setAttribute("aria-selected", String(b.dataset.liveView === (mapShown() ? "map" : "picture"))));
 }
+
+$("demo-hello-close").addEventListener("click", () => {
+  store("whenever-demo-hello", true);
+  $("demo-hello").hidden = true;
+});
 
 function chooseCamera(name) {
   hud.camera = name;
@@ -5628,6 +5643,7 @@ async function refreshState() {
   $("s-spend").textContent = "$" + spent.toFixed(3);
   renderControls(state.controls);
   $("demo-pill").hidden = !state.demo;
+  $("demo-hello").hidden = !state.demo || chosenBefore("whenever-demo-hello");
   if (keys.wall !== JSON.stringify([state.wall, state.cameras])) {
     keys.wall = JSON.stringify([state.wall, state.cameras]);
     shapeFrame();
