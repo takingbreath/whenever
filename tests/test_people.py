@@ -90,6 +90,18 @@ class People(unittest.TestCase):
         self.now += (people.LOOK_HOURS + 1) * 3600
         self.assertIsNone(self.who(back))
 
+    def test_a_name_from_a_clothes_tag_alone_needs_a_nearer_look(self):
+        def near(score):
+            # A look with this likeness to clothes colour 40, the tag's look.
+            vector = np.zeros(512, np.float32)
+            vector[340], vector[10] = score, (1 - score * score) ** 0.5
+            return {"face": None, "look": vector, "face_size": 0}
+        self.book.tag("Ravi", picture(0, clothes=40))   # the face turned away: only the clothes
+        self.assertIsNone(self.book.match(near(0.91)), "a waiter in dark clothes came this near")
+        self.assertEqual(self.book.match(near(0.95))["name"], "Ravi")
+        self.book.tag("Ravi", picture(7, clothes=40))   # now a face of Ravi today too
+        self.assertEqual(self.book.match(near(0.91))["name"], "Ravi")
+
     def test_two_people_in_the_same_clothes_leave_a_look_undecided(self):
         self.book.tag("Ravi", picture(7, clothes=40))
         self.book.tag("Asha", picture(8, clothes=40))

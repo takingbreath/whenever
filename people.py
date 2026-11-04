@@ -61,6 +61,10 @@ FACE_SCORE = 0.75         # YuNet's confidence that it is a face
 MIN_FACE = 20             # pixels across, in the camera's own picture
 LOOK_HOURS = 12.0
 LOOK_MATCH = 0.90
+# A name that rests only on the operator's tag of clothes today, with no face of that person today, needs
+# a nearer look. In the cafe clip the same guest's look scored 0.94 to 0.98 between frames, and the nearest
+# other person, a waiter also in dark clothes, 0.89.
+LOOK_TAG_MATCH = 0.92
 LOOK_MARGIN = 0.04        # a look must be this much nearer one person than any other tagged person
 MAX_FACES = 40
 MAX_LOOKS = 30
@@ -481,6 +485,11 @@ class People:
                     best = (sure, seen.get("camera") or "")
         return best
 
+    def _face_seen_today(self, person, now):
+        """True when a face of the person was tagged or seen today, not only their clothes."""
+        return any(s.get("tag") and same_day(s["t"], now) for s in person["faces"]) or any(
+            seen.get("by") == "face" and same_day(seen["t"], now) and not seen.get("wrong") for seen in person["seen"])
+
     def match(self, found, now=None, camera=None):
         """The tagged person that read() found, or None, as a dict with id (also person_id), name, role, score,
         sure (0 to 0.99), face_px and by ("face" or "look"). A face decides across days and weeks, from
@@ -511,6 +520,8 @@ class People:
                 return None
             today = self._face_today(scores[0][1], now)
             if today is None:
+                return None
+            if scores[0][0] < LOOK_TAG_MATCH and not self._face_seen_today(scores[0][1], now):
                 return None
             factor = LOOK_SAME_CAMERA if camera and camera == today[1] else LOOK_OTHER_CAMERA
             return self._answer(scores[0][1], "look", scores[0][0], round(today[0] * factor, 3), found)
