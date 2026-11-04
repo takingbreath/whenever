@@ -434,6 +434,7 @@ function openFrame(url, box, title) {
   $("viewer").dataset.box = box && box.w ? JSON.stringify([box.x1 / box.w, box.y1 / box.h, box.x2 / box.w, box.y2 / box.h]) : "";
   $("tag-note").textContent = "";
   $("tag-name").value = "";
+  roleChips($("tag-role"), "");
   const mark = $("viewer-box");
   mark.hidden = !box;
   if (box) {
@@ -458,12 +459,14 @@ $("tag-form").addEventListener("submit", async (event) => {
   try {
     const reply = await postJson("/api/people", {
       picture: viewer.dataset.url, name, box: viewer.dataset.box ? JSON.parse(viewer.dataset.box) : null,
+      role: $("tag-role").dataset.role || "",
     });
     const person = reply.person;
     $("tag-note").textContent = person.faces
       ? `Tagged ${person.name}. Whenever will know them by face from now on.`
       : `Tagged ${person.name} by look only, for today. A picture with a clear face lets Whenever know them on other days.`;
     renderPeople();
+    if (screen === "actions") renderFacesToday();
   } catch (error) {
     $("tag-note").textContent = error.message;
   } finally {
@@ -508,11 +511,15 @@ async function renderPeople() {
     } else {
       badge.append(icon("eye"));
     }
-    const words = element("span", "place-words");
+    // The name opens the person's page: their visits, sightings and role.
+    const words = element("a", "place-words person-link");
+    words.href = `#/person/${encodeURIComponent(person.id)}`;
     const seen = person.seen
       ? `Seen ${person.times_seen} ${person.times_seen === 1 ? "time" : "times"}, last ${dayName(person.seen.t).replace(/^(Today|Yesterday)$/, (d) => d.toLowerCase())} at ${clock(person.seen.t)}${person.seen.camera ? ` on ${person.seen.camera}` : ""}`
       : "Not seen since the tag";
-    words.append(element("b", null, person.name), element("small", null, [seen, person.faces ? "" : "no face yet"].filter(Boolean).join(" · ")));
+    const name = element("b", null, person.name);
+    if (person.role) name.append(roleBadge(person.role));
+    words.append(name, element("small", null, [seen, person.faces ? "" : "no face yet"].filter(Boolean).join(" · ")));
     const rename = button("Rename", "pill-button small ghost", async () => {
       const name = prompt("A new name or label", person.name);
       if (!name || name.trim() === person.name) return;
@@ -541,6 +548,316 @@ async function renderPeople() {
   }
   card.append(list);
   $("people-card").replaceChildren(card);
+}
+
+/* ---------- Faces seen today, finding a person, and one person's page ---------- */
+
+// Each person or visitor seen today, once. A tap names a visitor or opens a person's page. Two ticked
+// faces of one person become one with Same person.
+const facesPicked = new Set();
+let facesData = [];
+let naming = null;
+
+function groupName(group) {
+  if (group.name) return group.name;
+  const n = String(group.id ?? "").match(/\d+/);
+  return n ? `Visitor ${n[0]}` : "Visitor";
+}
+
+async function renderFacesToday() {
+  try {
+    const response = await fetch("/api/people/today");
+    if (!response.ok) throw new Error();
+    facesData = (await response.json()).groups || [];
+  } catch {
+    $("faces-today").hidden = true;
+    return;
+  }
+  for (const id of [...facesPicked]) if (!facesData.some((g) => g.id === id)) facesPicked.delete(id);
+  drawFaces();
+}
+
+function drawFaces() {
+  const box = $("faces-today");
+  box.hidden = false;
+  const head = element("div", "faces-head");
+  head.append(element("h3", null, "Faces seen today"), element("span", "faces-count", facesData.length ? plural(facesData.length, "face") : ""));
+  if (!facesData.length) {
+    box.replaceChildren(head, element("p", "note", "Nobody yet today. Faces show up here as the cameras see them."));
+    return;
+  }
+  const grid = element("ul", "faces-grid");
+  for (const group of facesData) {
+    const picked = facesPicked.has(group.id);
+    const item = element("li", "face-tile" + (picked ? " picked" : ""));
+    const open = element("button", "face-open");
+    open.type = "button";
+    const img = element("img");
+    img.src = group.face;
+    img.alt = "";
+    img.loading = "lazy";
+    const name = element("b", null, groupName(group));
+    if (group.role) name.append(roleBadge(group.role));
+    const span = group.last - group.first > 60 ? `${clock(group.first)} to ${clock(group.last)}` : clock(group.last);
+    open.append(img, name, element("small", null, `${plural(group.count, "time")} · ${span}`),
+      element("small", "face-where", joinList(group.cameras || [])));
+    open.setAttribute("aria-label", `${groupName(group)}, seen ${plural(group.count, "time")}, ${span}. `
+      + (group.kind === "person" ? "Open their page." : "Name them."));
+    open.addEventListener("click", () => {
+      if (group.kind === "person") location.hash = `#/person/${encodeURIComponent(group.id)}`;
+      else openNameSheet(group);
+    });
+    const pick = element("button", "face-pick");
+    pick.type = "button";
+    pick.setAttribute("aria-pressed", String(picked));
+    pick.setAttribute("aria-label", `Tick ${groupName(group)}, to join with another face of the same person`);
+    pick.append(icon("check"));
+    pick.addEventListener("click", () => {
+      if (picked) facesPicked.delete(group.id);
+      else {
+        facesPicked.add(group.id);
+        if (facesPicked.size > 2) facesPicked.delete(facesPicked.values().next().value);
+      }
+      drawFaces();
+    });
+    item.append(open, pick);
+    grid.append(item);
+  }
+  const bar = element("div", "faces-bar");
+  const chosen = [...facesPicked].map((id) => facesData.find((g) => g.id === id)).filter(Boolean);
+  if (chosen.length === 2) {
+    const [a, b] = chosen;
+    // A tagged person keeps their name. Between two visitors, the one seen more often stays.
+    const into = a.kind === "person" ? a : b.kind === "person" ? b : a.count >= b.count ? a : b;
+    const from = into === a ? b : a;
+    bar.append(element("span", null, `${groupName(from)} joins ${groupName(into)}`),
+      button("Same person", "pill-button small", async () => {
+        try {
+          await postJson("/api/people/merge", { from: from.id, into: into.id });
+          facesPicked.clear();
+          flash(`Joined as ${groupName(into)}.`);
+          renderFacesToday();
+          renderPeople();
+        } catch (error) {
+          flash(error.message);
+        }
+      }, "check"),
+      button("Clear", "link-button", () => {
+        facesPicked.clear();
+        drawFaces();
+      }));
+  } else {
+    bar.append(element("span", null, chosen.length ? "Tick one more face of the same person."
+      : "Tap a face to name it. Tick two faces of one person to join them."));
+  }
+  box.replaceChildren(head, grid, bar);
+}
+
+function openNameSheet(group) {
+  naming = group;
+  $("name-face").src = group.face || "";
+  $("name-face").alt = groupName(group);
+  $("name-title").textContent = group.name ? `Rename ${group.name}` : `Who is ${groupName(group)}?`;
+  $("name-seen").textContent = `Seen ${plural(group.count, "time")} today, ${clock(group.first)} to ${clock(group.last)}`
+    + `${group.cameras?.length ? `, on ${joinList(group.cameras)}` : ""}.`;
+  $("name-input").value = group.name || "";
+  $("name-note").textContent = "";
+  roleChips($("name-role"), group.role || "");
+  $("name-sheet").showModal();
+}
+
+$("name-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = $("name-input").value.trim();
+  if (!name) {
+    $("name-note").textContent = "Write a name or a label first.";
+    $("name-input").focus();
+    return;
+  }
+  $("name-save").disabled = true;
+  try {
+    const reply = await postJson("/api/people", { visitor: naming.id, name, role: $("name-role").dataset.role || "" });
+    $("name-sheet").close();
+    flash(`Named ${reply.person?.name || name}. Whenever knows them from now on.`);
+    renderFacesToday();
+    renderPeople();
+  } catch (error) {
+    $("name-note").textContent = error.message;
+  } finally {
+    $("name-save").disabled = false;
+  }
+});
+$("name-close").addEventListener("click", () => $("name-sheet").close());
+$("name-sheet").addEventListener("click", (event) => { if (event.target === $("name-sheet")) $("name-sheet").close(); });
+
+// Find a person by words, such as "man in a white checked shirt". Each crop opens its frame in the
+// viewer, where the person can be tagged.
+$("people-search").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const words_ = $("people-words").value.trim();
+  if (!words_) return $("people-words").focus();
+  const note = $("people-note");
+  $("people-find").disabled = true;
+  note.className = "note";
+  note.textContent = "Looking through the people of the last day";
+  $("people-results").replaceChildren();
+  try {
+    const response = await fetch(`/api/people/search?q=${encodeURIComponent(words_)}&hours=24`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "The search did not work. Try again.");
+    const results = data.results || [];
+    note.textContent = results.length ? `${plural(results.length, "person", "people")} like that, the closest first. Tap one to see the picture and tag them.`
+      : "Nobody like that in the last day.";
+    $("people-results").replaceChildren(...results.map((r) => {
+      const title = [r.name, r.camera, `${dayName(r.t) === "Today" ? "" : `${dayName(r.t)} `}${clock(r.t)}`].filter(Boolean).join(", ");
+      const open = element("button", "result-tile");
+      open.type = "button";
+      open.setAttribute("aria-label", `Open: ${title}`);
+      const img = element("img");
+      img.src = r.picture;
+      img.alt = "";
+      img.loading = "lazy";
+      const said = element("span", "result-words");
+      said.append(element("b", null, r.name || clock(r.t)), element("small", null, r.name ? `${clock(r.t)} · ${r.camera}` : r.camera || ""));
+      open.append(img, said);
+      open.addEventListener("click", () => openFrame(r.picture, null, title));
+      return open;
+    }));
+  } catch (error) {
+    note.className = "note error";
+    note.textContent = error.message;
+  } finally {
+    $("people-find").disabled = false;
+  }
+});
+
+// One person: their face and role, the days they came in the last 30, how long they stay, where they
+// were seen last, and each sighting, which opens its frame.
+async function renderPersonPage(id) {
+  const box = $("person-page");
+  if (box.dataset.id !== id) box.replaceChildren(element("p", "note", "Loading"));
+  box.dataset.id = id;
+  let data;
+  try {
+    const response = await fetch(`/api/people/${encodeURIComponent(id)}/page`);
+    data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "There is no such person.");
+  } catch (error) {
+    const empty = element("div", "empty");
+    empty.append(element("h2", null, "Not found"), element("p", null, error.message));
+    box.replaceChildren(empty);
+    return;
+  }
+  if (screen !== "person" || box.dataset.id !== id) return;
+  const person = data.person || {};
+  const head = element("header", "person-head");
+  const face = element("img", "person-face-big");
+  face.src = person.face || (person.picture ? `/people-file/${person.id}/${person.picture}` : "");
+  face.alt = person.name || "";
+  const side = element("div", "person-side");
+  const title = element("h1", null, person.name || "Someone");
+  const roles = roleChips(element("div", "chips role-chips"), person.role || "", async (role) => {
+    try {
+      await postJson(`/api/people/${encodeURIComponent(id)}`, { role });
+      flash(role ? `${person.name} is ${ROLE_WORD[role]} now.` : `${person.name} has no role now.`);
+      renderPeople();
+    } catch (error) {
+      flash(error.message);
+    }
+  });
+  const tools = element("div", "person-tools");
+  tools.append(button("Rename", "pill-button small ghost", async () => {
+    const name = prompt("A new name or label", person.name);
+    if (!name || name.trim() === person.name) return;
+    try {
+      await postJson(`/api/people/${encodeURIComponent(id)}`, { name });
+      renderPersonPage(id);
+      renderPeople();
+    } catch (error) {
+      flash(error.message);
+    }
+  }, "pencil"));
+  let armed = false;
+  const forget = button("Forget", "link-button", async () => {
+    if (!armed) {
+      armed = true;
+      forget.textContent = "Tap again to forget";
+      setTimeout(() => { armed = false; forget.textContent = "Forget"; }, 3500);
+      return;
+    }
+    await fetch(`/api/people/${encodeURIComponent(id)}`, { method: "DELETE" });
+    flash(`Whenever forgot ${person.name}.`);
+    location.hash = "#/actions";
+  });
+  tools.append(forget);
+  side.append(title, roles, tools);
+  head.append(face, side);
+
+  const visits = data.visits || [];
+  const days = visits.filter((v) => v.count > 0).length;
+  const numbers = element("div", "person-numbers");
+  const tile = (value, label) => {
+    const t = element("div", "person-number");
+    t.append(element("b", null, value), element("span", null, label));
+    return t;
+  };
+  numbers.append(tile(String(days), `${days === 1 ? "day" : "days"} here, last 30`),
+    tile(data.avg_stay_min != null ? stayWords(data.avg_stay_min * 60) : "–", "average stay"),
+    tile(data.last ? ago(data.last.t) : "–", data.last?.camera ? `last seen, ${data.last.camera}` : "last seen"));
+
+  // The last 30 days as a calendar, Monday first, darker on longer visits.
+  const calendar = element("div", "visit-calendar");
+  calendar.setAttribute("role", "img");
+  calendar.setAttribute("aria-label", `Came in on ${plural(days, "day")} of the last 30`);
+  for (const letter of ["M", "T", "W", "T", "F", "S", "S"]) calendar.append(element("span", "visit-weekday", letter));
+  const first = visits.length ? new Date(`${visits[0].day}T12:00:00`) : null;
+  for (let i = 0; first && i < (first.getDay() + 6) % 7; i++) calendar.append(element("span", "visit-day blank"));
+  for (const v of visits) {
+    const when = new Date(`${v.day}T12:00:00`);
+    const cell = element("span", "visit-day");
+    cell.dataset.level = String(!v.count ? 0 : v.minutes < 20 ? 1 : v.minutes < 45 ? 2 : 3);
+    if (when.toDateString() === new Date().toDateString()) cell.classList.add("today");
+    cell.title = `${when.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })}: `
+      + (v.count ? `${plural(v.count, "visit")}, ${v.minutes} min` : "not seen");
+    cell.textContent = String(when.getDate());
+    calendar.append(cell);
+  }
+
+  const nodes = [head, numbers, element("h2", "section-title small", "Visits, last 30 days"), calendar];
+  if (data.last?.picture) {
+    const last = element("button", "person-last");
+    last.type = "button";
+    const img = element("img");
+    img.src = data.last.picture;
+    img.alt = `${person.name}, last seen`;
+    const title_ = `${data.last.camera || ""}, ${dayName(data.last.t)} ${clock(data.last.t)}`.replace(/^, /, "");
+    last.append(img, element("span", null, `Last seen · ${title_}`));
+    last.addEventListener("click", () => openFrame(data.last.picture, null, `${person.name}, ${title_}`));
+    nodes.push(element("h2", "section-title small", "Last seen"), last);
+  }
+  const sightings = data.sightings || [];
+  if (sightings.length) {
+    const list = element("ul", "sightings");
+    for (const s of sightings) {
+      const row = element("li");
+      const open = element("button", "sighting");
+      open.type = "button";
+      const img = element("img");
+      img.src = s.picture;
+      img.alt = "";
+      img.loading = "lazy";
+      const said = element("span", "place-words");
+      const when = `${dayName(s.t)}, ${clock(s.t)}`;
+      said.append(element("b", null, when), element("small", null,
+        [s.camera, s.sure != null ? `${Math.round(s.sure * 100)}% sure${s.by ? ` by ${s.by}` : ""}` : ""].filter(Boolean).join(" · ")));
+      open.append(img, said, icon("arrow"));
+      open.addEventListener("click", () => openFrame(s.picture, s.box || null, `${person.name}, ${s.camera || ""} ${when}`.trim()));
+      row.append(open);
+      list.append(row);
+    }
+    nodes.push(element("h2", "section-title small", "Sightings"), list);
+  }
+  box.replaceChildren(...nodes);
 }
 
 function pictureTitle(picture) {
@@ -866,9 +1183,26 @@ const phone = matchMedia("(max-width: 600px)");
 function shapeFrame() {
   if (!video.videoWidth) return;
   const frame = $("frame");
+  const wrap = $("frame-wrap");
   const ratio = video.videoWidth / video.videoHeight;
   const columns = liveCamera ? (state?.wall?.[0] || 1) : 1;
   frame.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
+  // One camera shown large: the whole wall grows behind a window the size of one tile. A click still
+  // lands on the wall, so pointing, aiming and outlines keep the wall coordinates the server expects.
+  const tile = shownTile();
+  wrap.classList.toggle("zoomed", !!tile);
+  if (tile) {
+    const tileRatio = (ratio * tile.rows) / tile.columns;
+    wrap.style.aspectRatio = String(tileRatio);
+    wrap.style.maxWidth = `calc(64vh * ${tileRatio.toFixed(4)})`;
+    frame.style.width = `${tile.columns * 100}%`;
+    frame.style.maxWidth = "none";
+    frame.style.transform = `translate(${(-100 * tile.col) / tile.columns}%, ${(-100 * tile.row) / tile.rows}%)`;
+    return;
+  }
+  wrap.style.aspectRatio = "";
+  wrap.style.maxWidth = "";
+  frame.style.transform = "";
   if (phone.matches && columns >= 3) {
     frame.style.width = `${(columns / 1.5) * 100}%`;
     frame.style.maxWidth = "none";
@@ -1306,14 +1640,20 @@ function route() {
   const wide = matchMedia("(min-width: 960px)").matches;
   document.querySelectorAll("[data-nav]").forEach((a) => {
     const current = a.dataset.nav === name || (name === "whenever" && a.dataset.nav === "whenevers")
-      || (name === "cameras" && !wide && a.dataset.nav === "live");
+      || (name === "cameras" && !wide && a.dataset.nav === "live") || (name === "person" && a.dataset.nav === "actions");
     if (current) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   });
   focusId = name === "live" ? (location.hash.match(/rule=([a-z0-9]+)/) || [])[1] || null : null;
   renderFocus(true);
+  shapeFrame();
+  if (name === "live") {
+    renderViewBar(true);
+    pollOverlay();
+  }
   if (changed) window.scrollTo(0, 0);
   if (name === "whenever") renderDetail(parts[1], true);
+  if (name === "person") renderPersonPage(parts[1]);
   if (name === "activity") {
     showActivityView(["reports", "problems"].includes(parts[1]) ? parts[1] : "feed");
     loadJournal(true);
@@ -1323,6 +1663,7 @@ function route() {
   if (name === "actions") {
     renderPhoneCard(true);
     renderPeople();
+    renderFacesToday();
   }
   if (name === "cameras") renderCamerasScreen(true);
   if (name === "whenevers") renderList(true);
@@ -2119,13 +2460,14 @@ function entryNode(row) {
     text.append(buttons);
   }
   li.append(badge, text);
-  if (row.values?.clip) li.append(clipNode(row.values.clip, row.values.picture, false));
+  if (row.values?.clip) li.append(clipNode(row.values.clip, row.values.picture, false, clipInfo(row.values)));
   else if (row.values?.picture) li.append(proofPicture(row));
   return li;
 }
 
 // A clip of only the cameras where it happened. In the feed it waits for a tap. The alert card plays it.
-function clipNode(url, poster, autoplay) {
+// With info (its cameras and the second it starts), the clip shows the boxes and names that Live showed.
+function clipNode(url, poster, autoplay, info) {
   const box = element("div", "entry-clip");
   const clip = document.createElement("video");
   clip.src = url;
@@ -2147,7 +2489,258 @@ function clipNode(url, poster, autoplay) {
     box.append(play);
   }
   box.prepend(clip);
+  if (info) clipOverlay(box, clip, info);
   return box;
+}
+
+// A clip's cameras and the second it starts. A server that does not say clip_start still names the clip
+// file after the second of its moment, and the clip starts CLIP_BEFORE_S before that.
+function clipInfo(values) {
+  if (!values?.clip) return null;
+  const cameras = values.clip_cameras || values.cameras || (values.camera ? [values.camera] : []);
+  let start = values.clip_start ?? values.clip?.start;
+  if (start == null) {
+    const second = Number((String(values.clip).match(/\/(\d{9,11})-[a-z0-9]+\.mp4/i) || [])[1]);
+    if (second) start = second - CLIP_BEFORE_S;
+  }
+  return cameras.length && start ? { cameras, start } : null;
+}
+
+// Draws what the analyzer kept for the clip's moment over the clip, in step with the clip's own time.
+// Several cameras play side by side at the same height, in the order of the alert's picture.
+function clipOverlay(box, clip, info) {
+  const canvas = element("canvas", "clip-hud");
+  canvas.setAttribute("aria-hidden", "true");
+  box.append(canvas);
+  let kept = null;
+  let loading = false;
+  let running = false;
+  const load = async () => {
+    if (kept || loading) return;
+    loading = true;
+    const span = Number.isFinite(clip.duration) && clip.duration > 0 ? clip.duration : 12;
+    const from = (info.start - 1).toFixed(2);
+    const to = (info.start + span + 1).toFixed(2);
+    kept = await Promise.all(info.cameras.map((name) => fetch(`/api/overlay/history?camera=${encodeURIComponent(name)}&from=${from}&to=${to}`)
+      .then((r) => (r.ok ? r.json() : null)).then((r) => r && { size: r.size || [16, 9], frames: (r.frames || []).sort((a, b) => a.t - b.t) })
+      .catch(() => null)));
+    draw();
+  };
+  const draw = () => {
+    if (!kept || !clip.videoWidth || !clip.clientWidth) return;
+    const scale = Math.min(clip.clientWidth / clip.videoWidth, clip.clientHeight / clip.videoHeight);
+    const area = { w: clip.videoWidth * scale, h: clip.videoHeight * scale };
+    area.x = clip.offsetLeft + (clip.clientWidth - area.w) / 2;
+    area.y = clip.offsetTop + (clip.clientHeight - area.h) / 2;
+    const ratio = Math.min(devicePixelRatio || 1, 2);
+    Object.assign(canvas.style, { left: `${area.x}px`, top: `${area.y}px`, width: `${area.w}px`, height: `${area.h}px` });
+    canvas.width = Math.round(area.w * ratio);
+    canvas.height = Math.round(area.h * ratio);
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    const t = info.start + clip.currentTime;
+    const aspects = kept.map((k) => (k ? k.size[0] / k.size[1] : 16 / 9));
+    const total = aspects.reduce((a, b) => a + b, 0);
+    const chips = [];
+    let x = 0;
+    kept.forEach((track, i) => {
+      const rect = { x, y: 0, w: (area.w * aspects[i]) / total, h: area.h };
+      x += rect.w;
+      if (!track?.frames.length) return;
+      let a = null;
+      let b = null;
+      for (const f of track.frames) {
+        if (f.t <= t) a = f;
+        else {
+          b = f;
+          break;
+        }
+      }
+      a = a || b;
+      // Nothing kept near this moment: the clip plays plain.
+      if (!a || Math.abs(a.t - t) > 2.5) return;
+      const f = b && b !== a ? clamp((t - a.t) / Math.max(0.05, b.t - a.t), 0, 1) : 0;
+      const level = Math.min(2, detailOf(rect.w));
+      const size = clamp(rect.w / 46, 9.5, 12.5);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(rect.x, rect.y, rect.w, rect.h);
+      ctx.clip();
+      const step = (list, id) => (b && b !== a ? (list || []).find((q) => q.id === id) : null);
+      for (const thing of a.things || []) {
+        const next = step(b?.things, thing.id);
+        const shape = { item: thing, alpha: 1, box: next ? thing.box.map((v, k) => lerp(v, next.box[k], f)) : thing.box };
+        drawThing(ctx, shape, boxRect(shape.box, rect, false), size, level, 0, chips, rect);
+      }
+      for (const person of a.people || []) {
+        const next = step(b?.people, person.id);
+        const trail = track.frames.filter((fr) => fr.t <= t && fr.t > t - 3)
+          .map((fr) => (fr.people || []).find((q) => q.id === person.id)).filter(Boolean)
+          .map((q) => [(q.box[0] + q.box[2]) / 2, q.box[3]]);
+        const shape = { item: { ...person, trail }, alpha: 1, box: next ? person.box.map((v, k) => lerp(v, next.box[k], f)) : person.box };
+        if (hud.layers.trails) drawTrail(ctx, shape, rect, false);
+        drawPerson(ctx, shape, boxRect(shape.box, rect, false), size, level, 0, chips, rect);
+      }
+      ctx.restore();
+    });
+    flushChips(ctx, chips);
+  };
+  const loop = () => {
+    if (clip.paused || !clip.isConnected) {
+      running = false;
+      return;
+    }
+    draw();
+    requestAnimationFrame(loop);
+  };
+  clip.addEventListener("loadedmetadata", load);
+  clip.addEventListener("seeked", draw);
+  clip.addEventListener("timeupdate", () => { if (!running) draw(); });
+  clip.addEventListener("play", () => {
+    load();
+    if (!running) {
+      running = true;
+      requestAnimationFrame(loop);
+    }
+  });
+}
+
+/* ---------- Who it is: the alert's person, and the story before the alert ---------- */
+
+const EVIDENCE_WORD = { face: "Face", clothes: "Clothes", tracker: "Tracker", look: "Look" };
+const answeredWho = new Map();
+
+function roleBadge(role) {
+  const badge = element("span", "role-badge", ROLE_WORD[role] || words(role));
+  badge.dataset.role = role;
+  return badge;
+}
+
+// The four roles a person can have, as chips. Tapping the chosen one again clears it.
+function roleChips(box, current, onPick) {
+  box.replaceChildren(...ROLES.map(([role, label]) => {
+    const chip = button(label, "chip role-chip", () => {
+      const next = chip.getAttribute("aria-pressed") === "true" ? "" : role;
+      box.querySelectorAll(".role-chip").forEach((c) => c.setAttribute("aria-pressed", String(c === chip && next !== "")));
+      box.dataset.role = next;
+      onPick?.(next);
+    });
+    chip.dataset.role = role;
+    chip.setAttribute("aria-pressed", String(current === role));
+    return chip;
+  }));
+  box.dataset.role = current || "";
+  return box;
+}
+
+// Who Whenever thinks this is: the tagged face beside the face now, how sure it is, and why. Each answer
+// teaches it the face, and how far each kind of score can be trusted with these cameras.
+function whoNode(who) {
+  const box = element("div", "who");
+  const head = element("div", "who-head");
+  head.append(element("b", null, who.name ? `Is this ${who.name}?` : "Is this the same person?"));
+  if (who.role) head.append(roleBadge(who.role));
+  box.append(head);
+  const faces = element("div", "who-faces");
+  const face = (url, label) => {
+    const figure = element("figure", "who-face");
+    const img = element("img");
+    img.src = url;
+    img.alt = `${who.name || "The person"}, ${label.toLowerCase()}`;
+    img.loading = "lazy";
+    img.addEventListener("click", () => openFrame(url, null, `${who.name || "The person"}, ${label.toLowerCase()}`));
+    figure.append(img, element("figcaption", null, label));
+    return figure;
+  };
+  const tagged = who.tagged ? `Tagged ${new Date(who.tagged * 1000).toLocaleDateString([], { day: "numeric", month: "short" })}` : "Tagged";
+  if (who.tag_face) faces.append(face(who.tag_face, tagged));
+  if (who.now_face) faces.append(face(who.now_face, "Now"));
+  if (faces.childNodes.length) box.append(faces);
+  if (who.sure != null) {
+    const percent = Math.round(who.sure * 100);
+    const sure = element("div", "who-sure");
+    const label = element("div", "who-sure-label");
+    label.append(element("span", null, "How sure"), element("b", null, `${percent}%`));
+    const bar = element("div", "who-bar");
+    bar.setAttribute("role", "meter");
+    bar.setAttribute("aria-label", "How sure");
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", "100");
+    bar.setAttribute("aria-valuenow", String(percent));
+    const fill = element("i");
+    fill.style.width = `${percent}%`;
+    bar.append(fill);
+    sure.append(label, bar);
+    box.append(sure);
+  }
+  if (who.evidence?.length) {
+    const why = element("dl", "who-why");
+    for (const e of who.evidence) {
+      const row = element("div");
+      row.append(element("dt", null, EVIDENCE_WORD[e.kind] || words(e.kind)), element("dd", null, e.text || ""),
+        element("dd", "who-score", e.score != null ? `match ${Number(e.score).toFixed(2)}` : "kept"));
+      why.append(row);
+    }
+    box.append(why);
+  }
+  if (!who.person_id) return box;
+  const note = element("p", "note who-note", "Each answer teaches Whenever this face, and how sure each score really is here.");
+  // The feed redraws often, so an answer given on this page stays shown.
+  const given = answeredWho.get(`${who.person_id}|${who.sighting}`) ?? who.confirmed;
+  const show = (same, text) => {
+    yes.disabled = true;
+    no.disabled = true;
+    (same ? yes : no).classList.add("chosen");
+    note.className = "note who-note ok";
+    note.textContent = text || (same ? `Saved: this is ${who.name || "them"}. Whenever knows the face a little better now.`
+      : `Saved: not ${who.name || "them"}. Whenever will not count this face as them.`);
+  };
+  const answer = async (same) => {
+    yes.disabled = true;
+    no.disabled = true;
+    note.className = "note who-note";
+    note.textContent = "Saving";
+    try {
+      const reply = await postJson(`/api/people/${encodeURIComponent(who.person_id)}/confirm`, { sighting: who.sighting, yes: same });
+      answeredWho.set(`${who.person_id}|${who.sighting}`, same);
+      show(same, reply.text);
+    } catch (error) {
+      yes.disabled = false;
+      no.disabled = false;
+      note.className = "note who-note error";
+      note.textContent = error.message;
+    }
+  };
+  const yes = button("Yes, same person", "pill-button small who-yes", () => answer(true), "check");
+  const no = button("Not this person", "pill-button small ghost", () => answer(false), "x");
+  const row = element("div", "who-buttons");
+  row.append(yes, no);
+  box.append(row, note);
+  if (given === true || given === false) show(given);
+  return box;
+}
+
+// The moments before the alert: a few pictures, each with its time and what happened.
+function storyNode(story) {
+  const strip = element("div", "story");
+  for (const step of story.slice(0, 4)) {
+    const open = element("button", "story-step");
+    open.type = "button";
+    const img = element("img");
+    img.src = step.picture;
+    img.alt = step.text || "";
+    img.loading = "lazy";
+    const said = element("span", "story-words");
+    said.append(element("b", null, clock(step.t)), element("span", null, step.text || ""));
+    open.append(img, said);
+    open.addEventListener("click", () => openFrame(step.picture, null, `${clock(step.t)}: ${step.text || ""}`));
+    strip.append(open);
+  }
+  return strip;
+}
+
+function whoNodes(values) {
+  return [...(values?.people || []).map(whoNode), ...(values?.story?.length ? [storyNode(values.story)] : [])];
 }
 
 // An alert in the page: the cameras where it happened, playing, over whatever screen is open.
@@ -2160,11 +2753,12 @@ function showAlertCard(item) {
   words.append(element("b", null, item.rule), element("small", null, [joinList(item.cameras || []), clock(Date.now() / 1000)].filter(Boolean).join(" · ")));
   head.append(words, button("", "icon-button", hideAlertCard, "x"));
   head.lastChild.setAttribute("aria-label", "Close the alert");
-  const media = item.clip ? clipNode(item.clip, item.url, true) : item.url ? Object.assign(element("img", "alert-picture"), { src: item.url, alt: "" }) : null;
+  const info = clipInfo({ clip: item.clip, clip_start: item.clip_start, cameras: item.cameras });
+  const media = item.clip ? clipNode(item.clip, item.url, true, info) : item.url ? Object.assign(element("img", "alert-picture"), { src: item.url, alt: "" }) : null;
   const see = element("a", "pill-button small", "See it in Activity");
   see.href = "#/activity";
   see.addEventListener("click", hideAlertCard);
-  card.replaceChildren(head, ...(media ? [media] : []), element("p", null, item.text), see);
+  card.replaceChildren(head, ...(media ? [media] : []), element("p", null, item.text), ...whoNodes(item), see);
   card.hidden = false;
   clearTimeout(alertTimer);
   alertTimer = setTimeout(hideAlertCard, 20000);
@@ -2305,8 +2899,11 @@ function occurrenceCard(card) {
 
   // The cameras where it happened, as the phone got them: the clip, or else the picture.
   const media = rows.find((r) => r.values?.clip) || first || event;
-  if (media.values?.clip) li.append(clipNode(media.values.clip, media.values.picture, false));
+  if (media.values?.clip) li.append(clipNode(media.values.clip, media.values.picture, false, clipInfo(media.values)));
   else if (media.values?.picture) li.append(proofPicture(media));
+  // Who the alert is about, and the moments before it.
+  const told = rows.find((r) => r.values?.people?.length || r.values?.story?.length);
+  if (told) li.append(...whoNodes(told.values));
 
   // Steps that matter to the person: what the armed sensors saw, and the pictures found.
   const steps = element("div", "occ-steps");
@@ -3608,6 +4205,952 @@ function renderCameraKinds() {
   }));
 }
 
+/* ---------- Live overlay: who and what Whenever sees, drawn on the picture ---------- */
+
+// The analyzer says about twice a second where each person, table and thing is in each camera. The page
+// keeps the last seconds of it and draws the moment that the picture shows: a camera's HLS video runs a
+// few seconds behind the server, and its player says by how much. The live wall has no such delay.
+const HUD_POLL_MS = 450;
+const HUD_KEEP_S = 12;
+const HLS_BEHIND_S = 0.3;      // the analyzer's frame is a little older than the live edge it was read at
+const HEAT_KEEP_MS = 30000;
+const FLOOR_MS = 2000;
+const CLIP_BEFORE_S = 4;       // the server's clips start this long before their moment
+const ROLE_COLOR = { staff: "#b69dff", vip: "#f6c445", banned: "#ff5b4f", regular: "#3ed8b6", "": "#3ed8b6" };
+const ROLE_WORD = { staff: "Staff", vip: "VIP", banned: "Banned", regular: "Regular", "": "Guest" };
+const ROLES = [["staff", "Staff"], ["regular", "Regular"], ["vip", "VIP"], ["banned", "Banned"]];
+const PLACE_COLOR = { free: "#5fd690", busy: "#f6b13c", waiting: "#f6b13c", help: "#ff5b4f" };
+const PLACE_WORD = { free: "Free", busy: "Busy", waiting: "Waiting", help: "Needs help" };
+const EVENT_COLOR = { seated: "#5fd690", left: "#9a9ca3", back: "#3ed8b6", hand_up: "#ff5b4f", told: "#b69dff", alert: "#f6b13c" };
+const HUD_LAYERS = [["people", "People"], ["names", "Names"], ["tables", "Tables"], ["trails", "Trails"], ["heat", "Heat"],
+  ["clean", "Clean view"]];
+const HUD_INK = "#f4f3ef";
+const HUD_DIM = "rgba(244, 243, 239, 0.64)";
+const stillMotion = matchMedia("(prefers-reduced-motion: reduce)");
+const livePlayers = new Map();   // each camera's own player, while the page plays the media server's streams
+const hudCanvas = $("hud");
+
+// A person's choices on this device. Storage can be off, so each read and write may fail quietly.
+function stored(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+}
+
+function store(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
+const hud = {
+  layers: { people: true, names: true, tables: true, trails: true, heat: false, clean: false, ...stored("whenever-hud", {}) },
+  camera: stored("whenever-camera", null),   // the camera shown large, or null for the whole wall
+  view: stored("whenever-live-view", "picture"),
+  snaps: [], events: new Map(), totals: null, offset: null, after: 0,
+  ok: false, busy: false, failures: 0, failedAt: 0,
+  tracks: new Map(), heat: new Map(), floor: null, floorT: 0, floorAt: 0, floorBusy: false,
+  drawing: false, lastDraw: 0, moment: null, clock: "", keys: {},
+};
+
+const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+const lerp = (a, b, f) => a + (b - a) * f;
+
+function mmss(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  const pad = (n) => String(n).padStart(2, "0");
+  return s >= 3600 ? `${Math.floor(s / 3600)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}` : `${Math.floor(s / 60)}:${pad(s % 60)}`;
+}
+
+function ordinal(n) {
+  const tail = n % 100 >= 11 && n % 100 <= 13 ? "th" : { 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th";
+  return `${n}${tail}`;
+}
+
+function stayWords(seconds) {
+  const m = Math.round(seconds / 60);
+  return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
+}
+
+function plural(count, one, many = `${one}s`) {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+function serverNow() {
+  return Date.now() / 1000 + (hud.offset || 0);
+}
+
+function siteOf(name) {
+  return Object.entries(state?.sites || {}).find(([, names]) => names.includes(name))?.[0] || null;
+}
+
+// The camera shown large. The whole wall stays behind it, so pointing and outlines keep wall coordinates.
+function shownTile() {
+  const names = state?.cameras || [];
+  const [columns, rows] = state?.wall || [1, 1];
+  const index = names.indexOf(hud.camera);
+  if (!liveCamera || focusId || columns * rows <= 1 || index < 0) return null;
+  return { index, name: hud.camera, columns, rows, col: index % columns, row: Math.floor(index / columns) };
+}
+
+// Where a camera sits on the wall, as parts of the wall's width and height.
+function wallSpot(name) {
+  const names = state?.cameras || [];
+  const [columns, rows] = liveCamera ? state?.wall || [1, 1] : [1, 1];
+  if (columns * rows <= 1 || names.length <= 1) return { x: 0, y: 0, w: 1, h: 1 };
+  const index = names.indexOf(name);
+  if (index < 0) return null;
+  return { x: (index % columns) / columns, y: Math.floor(index / columns) / rows, w: 1 / columns, h: 1 / rows };
+}
+
+function hasPlaces() {
+  return !!hud.floor?.length || hud.snaps.some((s) => Object.values(s.cameras || {}).some((c) => c.places?.length));
+}
+
+function mapShown() {
+  return hud.view === "map" && hud.ok && hasPlaces();
+}
+
+async function pollOverlay() {
+  if (screen !== "live" || document.hidden || hud.busy || cameraMode) return;
+  // A server without an overlay is asked again now and then, not twice a second.
+  if (hud.failedAt && Date.now() - hud.failedAt < 15000) return;
+  hud.busy = true;
+  const tile = mapShown() ? null : shownTile();
+  const sent = Date.now() / 1000;
+  try {
+    const response = await fetch(`/api/overlay?cameras=${encodeURIComponent(tile ? tile.name : "")}&after=${hud.after}`);
+    if (response.status === 401) return location.reload();
+    if (response.status === 404) {
+      hud.ok = false;
+      hud.failedAt = Date.now();
+      return;
+    }
+    if (!response.ok) throw new Error(String(response.status));
+    const data = await response.json();
+    const got = Date.now() / 1000;
+    if (!Number.isFinite(data.t)) data.t = got;
+    const offset = data.t - (sent + got) / 2;
+    hud.offset = hud.offset == null ? offset : hud.offset * 0.85 + offset * 0.15;
+    for (const camera of Object.values(data.cameras || {})) camera.t ??= data.t;
+    hud.snaps.push(data);
+    while (hud.snaps.length > 2 && hud.snaps[0].t < data.t - HUD_KEEP_S) hud.snaps.shift();
+    for (const e of data.events || []) hud.events.set(`${Math.round(e.t * 10)}|${e.kind}|${e.text}`, e);
+    for (const [key, e] of hud.events) if (e.t < data.t - 3600) hud.events.delete(key);
+    for (const e of hud.events.values()) hud.after = Math.max(hud.after, e.t);
+    hud.totals = data.totals || null;
+    hud.ok = Object.keys(data.cameras || {}).length > 0 || hud.events.size > 0;
+    hud.failures = 0;
+    hud.failedAt = 0;
+  } catch {
+    // One missed answer keeps the last picture. Several in a row hide the overlay.
+    if (++hud.failures >= 4) hud.ok = false;
+  } finally {
+    hud.busy = false;
+  }
+  renderHud();
+}
+
+function renderHud() {
+  const live = document.querySelector('[data-screen="live"]');
+  const on = hud.ok && !cameraMode;
+  const map = on && mapShown();
+  live.classList.toggle("has-hud", on);
+  if (live.classList.contains("map-view") !== map) {
+    live.classList.toggle("map-view", map);
+    shapeFrame();
+  }
+  $("hud-stats").hidden = !on;
+  $("hud-timeline").hidden = !on;
+  $("hud-layers").hidden = !on || map;
+  $("floor").hidden = !map;
+  renderViewBar();
+  if (!on) return clearHud();
+  renderHudStats();
+  renderTimeline();
+  renderLayers();
+  if (map) renderFloor();
+  startHudDraw();
+}
+
+// Chips choose what Live shows large: the whole wall, or one camera, grouped by site when there are sites.
+function renderViewBar(force) {
+  const names = state?.cameras || [];
+  if (hud.camera && names.length && !names.includes(hud.camera)) hud.camera = null;
+  const sites = Object.keys(state?.sites || {}).length ? state.sites : null;
+  const pick = liveCamera && names.length > 1 && !cameraMode;
+  const views = hud.ok && hasPlaces();
+  const key = JSON.stringify([pick, names, sites, hud.camera, mapShown(), views, state?.wall]);
+  if (!force && key === hud.keys.bar) return;
+  hud.keys.bar = key;
+  $("view-bar").hidden = !pick && !views;
+  const shown = mapShown() ? undefined : hud.camera || null;
+  const chip = (name, label) => {
+    const b = button(label, "chip", () => chooseCamera(name));
+    b.setAttribute("aria-pressed", String(shown === name));
+    return b;
+  };
+  const nodes = [];
+  if (pick) {
+    nodes.push(chip(null, "All"));
+    const groups = sites ? Object.entries(sites).map(([site, list]) => [site, list.filter((n) => names.includes(n))]) : [["", names]];
+    const listed = new Set(groups.flatMap(([, list]) => list));
+    const rest = names.filter((n) => !listed.has(n));
+    if (rest.length) groups.push([sites ? "Other" : "", rest]);
+    for (const [site, list] of groups) {
+      if (!list.length) continue;
+      const group = element("span", "camera-group");
+      // A site of one camera with the same name needs no label.
+      if (site && !(list.length === 1 && list[0] === site)) group.append(element("span", "site-label", site));
+      group.append(...list.map((n) => chip(n, n)));
+      nodes.push(group);
+    }
+  }
+  $("camera-pick").replaceChildren(...nodes);
+  // On a phone the row scrolls, so the chosen camera stays in view.
+  requestAnimationFrame(() => {
+    const row = $("camera-pick");
+    const on = row.querySelector('[aria-pressed="true"]');
+    if (!on || row.scrollWidth <= row.clientWidth) return;
+    const a = row.getBoundingClientRect();
+    const b = on.getBoundingClientRect();
+    row.scrollLeft += b.left - a.left - (a.width - b.width) / 2;
+  });
+  $("view-pick").hidden = !views;
+  $("view-pick").querySelectorAll("button").forEach((b) =>
+    b.setAttribute("aria-selected", String(b.dataset.liveView === (mapShown() ? "map" : "picture"))));
+}
+
+function chooseCamera(name) {
+  hud.camera = name;
+  store("whenever-camera", name);
+  if (hud.view !== "picture") {
+    hud.view = "picture";
+    store("whenever-live-view", "picture");
+  }
+  $("frame-wrap").scrollLeft = 0;
+  renderHud();
+  shapeFrame();
+  renderViewBar(true);
+  renderHudStats(true);
+  renderTimeline(true);
+}
+
+$("view-pick").addEventListener("click", (event) => {
+  const b = event.target.closest("[data-live-view]");
+  if (!b) return;
+  hud.view = b.dataset.liveView;
+  store("whenever-live-view", hud.view);
+  renderHud();
+  renderViewBar(true);
+});
+
+function renderHudStats(force) {
+  const t = hud.totals || {};
+  const tile = mapShown() ? null : shownTile();
+  const site = tile && siteOf(tile.name);
+  const where = mapShown() ? "Floor map" : tile ? (site && site !== tile.name ? `${site} · ${tile.name}` : tile.name) : "All cameras";
+  const parts = [];
+  if (t.guests != null) parts.push([t.guests, t.guests === 1 ? "guest" : "guests"]);
+  if (t.staff != null) parts.push([t.staff, "staff"]);
+  if (t.tables) parts.push([`${t.busy || 0}/${t.tables}`, "tables busy"]);
+  if (t.longest_s) parts.push([stayWords(t.longest_s), "longest stay"]);
+  if (t.spend_hour != null) parts.push([`$${Number(t.spend_hour).toFixed(2)}`, "this hour"]);
+  const key = JSON.stringify([where, parts]);
+  if (!force && key === hud.keys.stats) return;
+  hud.keys.stats = key;
+  const live = element("span", "hud-live");
+  live.append(element("i"), element("b", null, "Live"), element("span", null, where));
+  const stats = parts.map(([value, label]) => {
+    const item = element("span", "hud-stat");
+    item.append(element("b", null, String(value)), label);
+    return item;
+  });
+  const time = element("span", "hud-clock", hud.clock);
+  time.id = "hud-clock";
+  $("hud-stats").replaceChildren(live, ...stats, time);
+}
+
+// The last hour as a line of dots. Labels that would run into the next one stay hidden, and a tap on a
+// dot says what happened then.
+function renderTimeline(force) {
+  const box = $("hud-timeline");
+  const now = serverNow();
+  const tile = mapShown() ? null : shownTile();
+  const events = [...hud.events.values()]
+    .filter((e) => e.t > now - 3600 && (!tile || !e.camera || e.camera === tile.name))
+    .sort((a, b) => a.t - b.t);
+  const same = (e) => hud.moment && hud.moment.t === e.t && hud.moment.text === e.text;
+  const key = JSON.stringify([events.map((e) => [e.t, e.kind, e.text]), Math.floor(now / 20), hud.moment?.t, hud.moment?.text,
+    Math.round(box.clientWidth / 40)]);
+  if (!force && key === hud.keys.timeline) return;
+  hud.keys.timeline = key;
+  const track = element("div", "hud-track");
+  for (const e of events) {
+    const dot = element("button", "hud-dot");
+    dot.type = "button";
+    const left = clamp(((e.t - (now - 3600)) / 3600) * 100, 0, 100);
+    dot.style.left = `${left}%`;
+    dot.style.setProperty("--dot", EVENT_COLOR[e.kind] || HUD_INK);
+    dot.setAttribute("aria-label", `${e.text}, ${clock(e.t)}`);
+    dot.classList.toggle("on", !!same(e));
+    dot.classList.toggle("flip", left > 70);
+    dot.append(element("span", "hud-dot-label", `${e.text} ${clock(e.t)}`));
+    dot.addEventListener("click", () => {
+      hud.moment = same(e) ? null : e;
+      renderTimeline(true);
+    });
+    track.append(dot);
+  }
+  if (!events.length) track.append(element("span", "hud-empty", "Nothing yet in the last hour"));
+  const nodes = [element("span", "hud-timeline-label", "Last hour"), track];
+  if (hud.moment) nodes.push(momentNode(hud.moment));
+  box.replaceChildren(...nodes);
+  requestAnimationFrame(() => {
+    const edge = track.getBoundingClientRect();
+    const dots = [...track.querySelectorAll(".hud-dot")].map((d) => {
+      const r = d.getBoundingClientRect();
+      return { d, x: r.left + r.width / 2 };
+    });
+    const labels = dots.map(({ d }) => ({ d, label: d.querySelector(".hud-dot-label"), r: d.querySelector(".hud-dot-label").getBoundingClientRect() }))
+      .sort((a, b) => a.r.left - b.r.left);
+    // A label shows when it runs into no other label and covers no other dot. The newest win.
+    const shown = [];
+    for (const item of labels.reverse()) {
+      const { r } = item;
+      const fits = r.left >= edge.left - 14 && r.right <= edge.right + 14
+        && !shown.some((o) => r.left < o.right + 10 && r.right > o.left - 10)
+        && !dots.some(({ d, x }) => d !== item.d && x > r.left - 8 && x < r.right + 8);
+      item.label.classList.toggle("hidden", !fits);
+      if (fits) shown.push(r);
+    }
+  });
+}
+
+function momentNode(e) {
+  const row = element("div", "hud-moment");
+  const dot = element("i", "hud-moment-dot");
+  dot.style.background = EVENT_COLOR[e.kind] || HUD_INK;
+  const said = [e.text, e.person && !e.text.includes(e.person) ? e.person : "", e.camera].filter(Boolean).join(" · ");
+  row.append(dot, element("b", null, clockSeconds(e.t)), element("span", "hud-moment-text", said));
+  if (e.picture) {
+    row.append(button("See the picture", "pill-button small", () => openFrame(e.picture, null,
+      [e.camera, clock(e.t)].filter(Boolean).join(", ")), "photo"));
+  }
+  const names = state?.cameras || [];
+  if (e.camera && names.length > 1 && names.includes(e.camera) && hud.camera !== e.camera) {
+    row.append(button(`Show ${e.camera}`, "pill-button small ghost", () => chooseCamera(e.camera), "eye"));
+  }
+  const close = button("", "icon-button hud-moment-close", () => {
+    hud.moment = null;
+    renderTimeline(true);
+  }, "x");
+  close.setAttribute("aria-label", "Close this moment");
+  row.append(close);
+  return row;
+}
+
+function renderLayers() {
+  const key = JSON.stringify(hud.layers);
+  if (key === hud.keys.layers) return;
+  hud.keys.layers = key;
+  $("hud-layers").replaceChildren(...HUD_LAYERS.map(([id, label]) => {
+    const chip = button(label, "chip", () => {
+      hud.layers[id] = !hud.layers[id];
+      store("whenever-hud", hud.layers);
+      renderLayers();
+    });
+    chip.setAttribute("aria-pressed", String(!!hud.layers[id]));
+    if (id !== "clean" && hud.layers.clean) chip.classList.add("wait");
+    return chip;
+  }));
+}
+
+function hudShown() {
+  return screen === "live" && hud.ok && !mapShown() && !cameraMode && !!video.videoWidth
+    && !document.querySelector('[data-screen="live"]').classList.contains("focused");
+}
+
+function startHudDraw() {
+  if (hud.drawing || !hudShown()) return;
+  hud.drawing = true;
+  hud.lastDraw = performance.now();
+  requestAnimationFrame(drawHud);
+}
+
+function clearHud() {
+  if (hudCanvas.width) {
+    hudCanvas.width = 0;
+    hudCanvas.height = 0;
+  }
+}
+
+// The moment of a camera that the picture shows now, on the server's clock. The analyzer reads the same
+// media server near its live edge, so the player's distance from that edge is the delay. MediaMTX's
+// low-latency playlists carry no program date, so a date is used only when a stream has one.
+function shownTime(name) {
+  const now = serverNow();
+  const live = livePlayers.get(name);
+  if (!live) return now;
+  const date = live.hls?.playingDate;
+  if (date && date.getTime() > 0) {
+    const t = date.getTime() / 1000;
+    if (t > now - 60 && t < now + 5) return t;
+  }
+  let behind = live.hls?.latency;
+  if (behind == null && live.player.seekable?.length) behind = live.player.seekable.end(live.player.seekable.length - 1) - live.player.currentTime;
+  return now - clamp(Number.isFinite(behind) ? behind : 2, 0, 30) - HLS_BEHIND_S;
+}
+
+// One camera at a moment: its two reports around the moment, with each box part of the way between them.
+// Boxes glide toward that place, a new one fades in, and one that left fades out where it was.
+function sceneAt(name, at, dt) {
+  let a = null;
+  let b = null;
+  for (const snap of hud.snaps) {
+    const camera = snap.cameras?.[name];
+    if (!camera) continue;
+    if (camera.t <= at) a = camera;
+    else {
+      b = camera;
+      break;
+    }
+  }
+  a = a || b;
+  if (!a) return null;
+  const f = b && b !== a ? clamp((at - a.t) / Math.max(0.05, b.t - a.t), 0, 1) : 0;
+  const glide = stillMotion.matches ? 1 : 1 - Math.exp(-dt / 0.09);
+  const scene = { name, people: [], things: [], places: [], age: Math.max(0, at - a.t) };
+  const seen = new Set();
+  for (const kind of ["places", "things", "people"]) {
+    for (const item of a[kind] || []) {
+      if (!item.box) continue;
+      const next = b && b !== a ? (b[kind] || []).find((x) => x.id === item.id) : null;
+      const box = next?.box ? item.box.map((v, i) => lerp(v, next.box[i], f)) : item.box;
+      const key = `${name}|${kind}|${item.id}`;
+      seen.add(key);
+      let track = hud.tracks.get(key);
+      if (!track) {
+        track = { box: box.slice(), alpha: stillMotion.matches ? 1 : 0, camera: name, kind };
+        hud.tracks.set(key, track);
+      }
+      track.box = kind === "places" ? box : track.box.map((v, i) => lerp(v, box[i], glide));
+      track.item = item;
+      track.gone = false;
+      track.alpha = Math.min(1, track.alpha + dt / 0.25);
+      scene[kind].push(track);
+    }
+  }
+  for (const [key, track] of hud.tracks) {
+    if (track.camera !== name || seen.has(key)) continue;
+    track.alpha -= stillMotion.matches ? 1 : dt / 0.6;
+    if (track.alpha <= 0) {
+      hud.tracks.delete(key);
+      continue;
+    }
+    track.gone = true;
+    scene[track.kind].push(track);
+  }
+  return scene;
+}
+
+function drawHud(now) {
+  if (!hudShown()) {
+    hud.drawing = false;
+    clearHud();
+    return;
+  }
+  requestAnimationFrame(drawHud);
+  const dt = Math.min(0.25, Math.max(0, (now - hud.lastDraw) / 1000));
+  hud.lastDraw = now;
+  // The canvas covers only the part of the wall in view, so a camera shown large costs no more to draw.
+  const area = videoArea();
+  const tile = shownTile();
+  const view = tile ? { x: tile.col / tile.columns, y: tile.row / tile.rows, w: 1 / tile.columns, h: 1 / tile.rows }
+    : { x: 0, y: 0, w: 1, h: 1 };
+  const width = view.w * area.width;
+  const height = view.h * area.height;
+  if (!(width > 0 && height > 0)) return;
+  const place = [`${area.left + view.x * area.width}px`, `${area.top + view.y * area.height}px`, `${width}px`, `${height}px`];
+  if (hudCanvas.dataset.place !== place.join()) {
+    hudCanvas.dataset.place = place.join();
+    [hudCanvas.style.left, hudCanvas.style.top, hudCanvas.style.width, hudCanvas.style.height] = place;
+  }
+  const ratio = Math.min(devicePixelRatio || 1, 2);
+  const pw = Math.round(width * ratio);
+  const ph = Math.round(height * ratio);
+  if (hudCanvas.width !== pw || hudCanvas.height !== ph) {
+    hudCanvas.width = pw;
+    hudCanvas.height = ph;
+  }
+  const ctx = hudCanvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  const mirror = $("frame").classList.contains("mirror");
+  const names = new Set(hud.snaps.flatMap((s) => Object.keys(s.cameras || {})));
+  const scenes = [];
+  let clockAt = null;
+  for (const name of names) {
+    if (tile && name !== tile.name) continue;
+    const spot = wallSpot(name);
+    if (!spot) continue;
+    const rect = { x: ((spot.x - view.x) / view.w) * width, y: ((spot.y - view.y) / view.h) * height,
+      w: (spot.w / view.w) * width, h: (spot.h / view.h) * height };
+    if (mirror) rect.x = width - rect.x - rect.w;
+    const at = shownTime(name);
+    clockAt ??= at;
+    const scene = sceneAt(name, at, dt);
+    if (scene) scenes.push({ rect, scene, mirror });
+  }
+  if (!hud.layers.clean) drawScenes(ctx, scenes);
+  const text = clockAt ? clockSeconds(clockAt) : "";
+  if (text !== hud.clock) {
+    hud.clock = text;
+    const el = $("hud-clock");
+    if (el) el.textContent = text;
+  }
+}
+
+function hudFont(size, weight = 700) {
+  return `${weight} ${size.toFixed(1)}px "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif`;
+}
+
+function rounded(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+  else ctx.rect(x, y, w, h);
+}
+
+function tint(hex, alpha) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+function boxRect(box, rect, mirror) {
+  const x1 = mirror ? 1 - box[2] : box[0];
+  const x2 = mirror ? 1 - box[0] : box[2];
+  return { x: rect.x + x1 * rect.w, y: rect.y + box[1] * rect.h, w: (x2 - x1) * rect.w, h: (box[3] - box[1]) * rect.h };
+}
+
+// How much a camera's chips say: everything on a large camera, less on a small one, none on a tiny one.
+function detailOf(width) {
+  return width >= 480 ? 3 : width >= 240 ? 2 : width >= 150 ? 1 : 0;
+}
+
+function drawScenes(ctx, scenes) {
+  const chips = [];
+  for (const { rect, scene, mirror } of scenes) {
+    const level = detailOf(rect.w);
+    const size = clamp(rect.w / 50, 10, 13);
+    const age = scene.age;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(rect.x, rect.y, rect.w, rect.h);
+    ctx.clip();
+    if (hud.layers.heat) drawHeat(ctx, scene.name, rect, mirror);
+    if (hud.layers.tables) {
+      for (const track of scene.places) drawPlace(ctx, track, boxRect(track.box, rect, mirror), size, level, age, chips, rect);
+    }
+    if (hud.layers.people) {
+      if (hud.layers.trails) for (const track of scene.people) drawTrail(ctx, track, rect, mirror);
+      for (const track of scene.things) drawThing(ctx, track, boxRect(track.box, rect, mirror), size, level, age, chips, rect);
+      for (const track of scene.people) drawPerson(ctx, track, boxRect(track.box, rect, mirror), size, level, age, chips, rect);
+    }
+    ctx.restore();
+  }
+  flushChips(ctx, chips);
+}
+
+// Chips go last, the most important first, each where it hides the fewest others. A minor chip that
+// would sit mostly on another one is left out.
+function flushChips(ctx, chips) {
+  const placed = [];
+  chips.sort((a, b) => b.rank - a.rank);
+  for (const chip of chips) {
+    const { w, h } = chip.layout;
+    let best = null;
+    let bestHit = Infinity;
+    for (const [tx, ty] of chip.tries) {
+      const spot = { x: clamp(tx, chip.bounds.x + 3, chip.bounds.x + chip.bounds.w - w - 3),
+        y: clamp(ty, chip.bounds.y + 3, chip.bounds.y + chip.bounds.h - h - 3), w, h };
+      let hit = 0;
+      for (const o of placed) {
+        hit += Math.max(0, Math.min(o.x + o.w, spot.x + w) - Math.max(o.x, spot.x))
+          * Math.max(0, Math.min(o.y + o.h, spot.y + h) - Math.max(o.y, spot.y));
+      }
+      if (hit < bestHit) {
+        best = spot;
+        bestHit = hit;
+      }
+      if (!hit) break;
+    }
+    if (bestHit > w * h * 0.45 && chip.rank < 3) continue;
+    placed.push(best);
+    chip.spot = best;
+  }
+  for (const chip of chips.reverse()) if (chip.spot) drawChip(ctx, chip.spot.x, chip.spot.y, chip.layout, chip.accent, chip.alpha);
+}
+
+// A chip: a dark pill, a bar of its colour at the left, and its words, each part in its own colour.
+// Timers keep each digit the same width, so they do not shake as they count.
+function layoutChip(ctx, parts, size) {
+  const gap = size * 0.42;
+  const out = [];
+  let width = size * 0.6 + 3 + size * 0.5;
+  for (const part of parts) {
+    if (!part || part.text == null || part.text === "") continue;
+    const fs = part.small ? size * 0.86 : size;
+    ctx.font = hudFont(fs, part.weight || 700);
+    const digit = ctx.measureText("0").width;
+    const w = part.timer ? [...part.text].reduce((s, ch) => s + (/\d/.test(ch) ? digit : ctx.measureText(ch).width), 0)
+      : ctx.measureText(part.text).width;
+    out.push({ ...part, fs, w });
+    width += w + gap;
+  }
+  width += size * 0.7 - gap;
+  return { parts: out, w: Math.ceil(width), h: Math.round(size * 1.9), size };
+}
+
+function drawChip(ctx, x, y, chip, accent, alpha = 1) {
+  const { w, h, size } = chip;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  rounded(ctx, x, y, w, h, Math.min(h / 2, size * 0.55));
+  ctx.fillStyle = "rgba(12, 13, 15, 0.82)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  const barX = x + size * 0.6;
+  rounded(ctx, barX, y + h * 0.24, 3, h * 0.52, 1.5);
+  ctx.fillStyle = accent;
+  ctx.fill();
+  let left = barX + 3 + size * 0.5;
+  ctx.textBaseline = "middle";
+  const middle = y + h / 2 + size * 0.06;
+  for (const part of chip.parts) {
+    ctx.font = hudFont(part.fs, part.weight || 700);
+    ctx.fillStyle = part.color || HUD_INK;
+    if (part.timer) {
+      const digit = ctx.measureText("0").width;
+      ctx.textAlign = "center";
+      let px = left;
+      for (const ch of part.text) {
+        const cw = /\d/.test(ch) ? digit : ctx.measureText(ch).width;
+        ctx.fillText(ch, px + cw / 2, middle);
+        px += cw;
+      }
+      ctx.textAlign = "left";
+    } else {
+      ctx.fillText(part.text, left, middle);
+    }
+    left += part.w + size * 0.42;
+  }
+  ctx.restore();
+}
+
+function drawBrackets(ctx, r, color, alpha, width) {
+  const len = Math.max(5, Math.min(r.w, r.h) * 0.24);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+  ctx.shadowBlur = 3;
+  ctx.beginPath();
+  ctx.moveTo(r.x, r.y + len); ctx.lineTo(r.x, r.y); ctx.lineTo(r.x + len, r.y);
+  ctx.moveTo(r.x + r.w - len, r.y); ctx.lineTo(r.x + r.w, r.y); ctx.lineTo(r.x + r.w, r.y + len);
+  ctx.moveTo(r.x + r.w, r.y + r.h - len); ctx.lineTo(r.x + r.w, r.y + r.h); ctx.lineTo(r.x + r.w - len, r.y + r.h);
+  ctx.moveTo(r.x + len, r.y + r.h); ctx.lineTo(r.x, r.y + r.h); ctx.lineTo(r.x, r.y + r.h - len);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function personParts(p, level, age) {
+  const role = p.role || "";
+  const color = ROLE_COLOR[role] || ROLE_COLOR[""];
+  const who = p.name || p.visitor || "";
+  const seated = p.seated_s != null;
+  const time = seated ? p.seated_s : p.stayed_s;
+  const timer = time != null ? mmss(time + age) : "";
+  const sure = p.sure != null ? `${Math.round(p.sure * 100)}%` : "";
+  if (level >= 3) {
+    return [
+      { text: ROLE_WORD[role] || words(role), color, weight: 600 },
+      { text: who, weight: 800 },
+      { text: sure && p.by ? `${sure} ${p.by}` : sure, color },
+      { text: p.visits > 1 ? `${ordinal(p.visits)} visit` : "", color: HUD_DIM, small: true },
+      { text: timer ? (seated ? "seated" : "stayed") : "", color: HUD_DIM, small: true, weight: 600 },
+      { text: timer, timer: true },
+    ];
+  }
+  // On a smaller camera only people with a name or a role that matters get a chip.
+  if (!p.name && !["staff", "vip", "banned"].includes(role)) return [];
+  if (level === 2) return [{ text: p.name || ROLE_WORD[role], weight: 800 }, { text: sure, color }, { text: timer, timer: true, color: HUD_DIM }];
+  return [{ text: p.name || (role && role !== "regular" ? ROLE_WORD[role] : ""), weight: 800 }];
+}
+
+// The largest chip that fits the camera, or none.
+function fitChip(ctx, partsAt, level, size, width) {
+  for (let lv = level; lv > 0; lv--) {
+    const layout = layoutChip(ctx, partsAt(lv), size);
+    if (layout.parts.length && layout.w <= width - 8) return layout;
+  }
+  return null;
+}
+
+function drawPerson(ctx, track, r, size, level, age, chips, bounds) {
+  const p = track.item;
+  const color = ROLE_COLOR[p.role || ""] || ROLE_COLOR[""];
+  drawBrackets(ctx, r, color, track.alpha, clamp(size / 6, 1.6, 2.4));
+  if (p.hand_up_s != null && !track.gone) drawHand(ctx, track, r, size, level, age, chips, bounds);
+  if (!hud.layers.names || level === 0) return;
+  const layout = fitChip(ctx, (lv) => personParts(p, lv, age), level, size, bounds.w);
+  if (!layout) return;
+  const cx = r.x + r.w / 2 - layout.w / 2;
+  chips.push({ layout, accent: color, alpha: track.alpha, rank: p.role === "banned" ? 4 : p.name ? 3 : 2, bounds,
+    tries: [[cx, r.y - layout.h - 5], [cx, r.y + r.h + 5], [cx, r.y + 4], [r.x + r.w + 5, r.y], [r.x - layout.w - 5, r.y]] });
+}
+
+// A hand up: a ring that pulses where the hand is, and how long it has been up.
+function drawHand(ctx, track, r, size, level, age, chips, bounds) {
+  const p = track.item;
+  const red = ROLE_COLOR.banned;
+  const x = r.x + r.w / 2;
+  const y = r.y + Math.min(r.h * 0.12, size * 2);
+  const radius = clamp(r.w * 0.3, size * 0.8, size * 2.2);
+  ctx.save();
+  ctx.strokeStyle = red;
+  if (!stillMotion.matches) {
+    for (const phase of [0, 0.5]) {
+      const f = (performance.now() / 1600 + phase) % 1;
+      ctx.globalAlpha = track.alpha * (1 - f) * 0.85;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, radius * (1 + f * 1.3), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = track.alpha;
+  ctx.lineWidth = 2.2;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = tint(red, 0.28);
+  ctx.beginPath();
+  ctx.arc(x, y, radius * 0.45, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  if (level === 0) return;
+  const layout = fitChip(ctx, (lv) => [{ text: "Hand up", color: red, weight: 800 },
+    { text: lv >= 2 ? mmss(p.hand_up_s + age) : "", timer: true },
+    { text: lv >= 3 && p.told ? `${p.told} told` : "", color: HUD_DIM, small: true }], Math.max(level, 1), size, bounds.w);
+  if (!layout) return;
+  chips.push({ layout, accent: red, alpha: track.alpha, rank: 5, bounds,
+    tries: [[x - layout.w / 2, y - radius * 1.5 - layout.h], [x + radius * 1.4, y - layout.h / 2],
+      [x - radius * 1.4 - layout.w, y - layout.h / 2], [x - layout.w / 2, y + radius * 1.5]] });
+}
+
+function placeParts(p, level, age) {
+  const color = PLACE_COLOR[p.state] || PLACE_COLOR.busy;
+  const free = p.state === "free";
+  const since = p.since_s ? mmss(p.since_s + age) : "";
+  const count = p.count ? plural(p.count, p.kind && p.kind !== "table" ? "person" : "guest", p.kind && p.kind !== "table" ? "people" : "guests") : "";
+  if (level >= 3) {
+    return [{ text: p.name, weight: 800 }, { text: free ? "Free" : count, color: free ? color : HUD_INK, weight: free ? 700 : 600 },
+      { text: free ? "" : since, timer: true, color }, { text: p.note || "", color: HUD_DIM, small: true }];
+  }
+  if (level === 2) return [{ text: p.name, weight: 800 }, free ? { text: "Free", color } : { text: since, timer: true, color }];
+  return [{ text: p.name, weight: 800 }];
+}
+
+// A table: a soft box in the colour of its state, free, busy, waiting or needing help.
+function drawPlace(ctx, track, r, size, level, age, chips, bounds) {
+  const p = track.item;
+  const color = PLACE_COLOR[p.state] || PLACE_COLOR.busy;
+  ctx.save();
+  ctx.globalAlpha = track.alpha;
+  rounded(ctx, r.x, r.y, r.w, r.h, clamp(size * 0.8, 5, 12));
+  ctx.fillStyle = tint(color, p.state === "free" ? 0.1 : 0.17);
+  ctx.fill();
+  ctx.strokeStyle = tint(color, 0.72);
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+  if (level === 0 || !p.name) return;
+  const layout = fitChip(ctx, (lv) => placeParts(p, lv, age), level, size, bounds.w);
+  if (!layout) return;
+  const cx = r.x + r.w / 2 - layout.w / 2;
+  chips.push({ layout, accent: color, alpha: track.alpha, rank: p.state === "help" ? 4 : 1, bounds,
+    tries: [[cx, r.y + r.h * 0.58 - layout.h / 2], [cx, r.y + r.h - layout.h - 4], [cx, r.y + 4], [cx, r.y + r.h + 4]] });
+}
+
+function drawThing(ctx, track, r, size, level, age, chips, bounds) {
+  const t = track.item;
+  drawBrackets(ctx, r, "#e9e7e1", track.alpha, 1.6);
+  if (level < 2) return;
+  const layout = layoutChip(ctx, [{ text: words(t.label || "thing"), weight: 800 },
+    { text: t.stayed_s != null ? mmss(t.stayed_s + age) : "", timer: true, color: HUD_DIM }], size * 0.92);
+  chips.push({ layout, accent: "#e9e7e1", alpha: track.alpha, rank: 1.5, bounds,
+    tries: [[r.x, r.y - layout.h - 4], [r.x, r.y + r.h + 4], [r.x + 3, r.y + 3]] });
+}
+
+// Where a person walked: a line that fades toward the past, ending at their feet now.
+function drawTrail(ctx, track, rect, mirror) {
+  const points = (track.item.trail || []).slice(-24);
+  if (!points.length) return;
+  points.push([(track.box[0] + track.box[2]) / 2, track.box[3]]);
+  const xy = ([x, y]) => [rect.x + (mirror ? 1 - x : x) * rect.w, rect.y + y * rect.h];
+  ctx.save();
+  ctx.strokeStyle = ROLE_COLOR[track.item.role || ""] || ROLE_COLOR[""];
+  ctx.lineWidth = 2.2;
+  ctx.lineCap = "round";
+  for (let i = 1; i < points.length; i++) {
+    ctx.globalAlpha = track.alpha * (0.08 + 0.62 * (i / (points.length - 1)));
+    const [x0, y0] = xy(points[i - 1]);
+    const [x1, y1] = xy(points[i]);
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawHeat(ctx, name, rect, mirror) {
+  const heat = hud.heat.get(name);
+  if (!heat || (!heat.loading && Date.now() - heat.at > HEAT_KEEP_MS)) loadHeat(name);
+  if (!heat?.image) return;
+  ctx.save();
+  ctx.globalAlpha = 0.85;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  if (mirror) {
+    ctx.translate(rect.x * 2 + rect.w, 0);
+    ctx.scale(-1, 1);
+  }
+  ctx.drawImage(heat.image, rect.x, rect.y, rect.w, rect.h);
+  ctx.restore();
+}
+
+async function loadHeat(name) {
+  const old = hud.heat.get(name);
+  hud.heat.set(name, { ...old, at: old?.at || 0, loading: true });
+  try {
+    const response = await fetch(`/api/heat?camera=${encodeURIComponent(name)}&hours=1`);
+    if (!response.ok) throw new Error();
+    const data = await response.json();
+    hud.heat.set(name, { at: Date.now(), image: heatImage(data.grid || [], data.max) });
+  } catch {
+    hud.heat.set(name, { at: Date.now(), image: null });
+  }
+}
+
+// The seconds that people spent in each cell of the picture, as a soft gradient: clear where nobody
+// stayed, then teal, amber and red. The small grid is drawn large, so the browser smooths it.
+function heatImage(grid, max) {
+  const rows = grid.length;
+  const cols = grid[0]?.length || 0;
+  if (!rows || !cols) return null;
+  const top = max || Math.max(1, ...grid.flat());
+  const canvas = document.createElement("canvas");
+  canvas.width = cols;
+  canvas.height = rows;
+  const context = canvas.getContext("2d");
+  const image = context.createImageData(cols, rows);
+  const stops = [[0, [62, 216, 182, 0]], [0.2, [62, 216, 182, 0.32]], [0.55, [246, 177, 60, 0.5]], [1, [255, 91, 79, 0.7]]];
+  grid.forEach((row, y) => row.forEach((value, x) => {
+    const v = clamp(value / top, 0, 1) ** 0.75;
+    let i = 1;
+    while (i < stops.length - 1 && v > stops[i][0]) i++;
+    const [p0, c0] = stops[i - 1];
+    const [p1, c1] = stops[i];
+    const f = clamp((v - p0) / (p1 - p0), 0, 1);
+    const o = (y * cols + x) * 4;
+    for (let k = 0; k < 3; k++) image.data[o + k] = lerp(c0[k], c1[k], f);
+    image.data[o + 3] = lerp(c0[3], c1[3], f) * 255;
+  }));
+  context.putImageData(image, 0, 0);
+  return canvas;
+}
+
+// The floor map: each camera's tables as tiles, free, busy with how long, waiting, or needing help.
+async function loadFloor() {
+  if (hud.floorBusy || Date.now() - hud.floorAt < FLOOR_MS) return;
+  hud.floorBusy = true;
+  try {
+    const response = await fetch("/api/floor");
+    if (!response.ok) throw new Error();
+    hud.floor = (await response.json()).places || [];
+    hud.floorT = serverNow();
+  } catch {
+    hud.floor = null;
+  } finally {
+    hud.floorAt = Date.now();
+    hud.floorBusy = false;
+  }
+}
+
+function floorPlaces() {
+  const now = serverNow();
+  if (hud.floor) return hud.floor.map((p) => ({ ...p, since: p.since_s ? p.since_s + now - hud.floorT : 0 }));
+  // Without /api/floor, the newest overlay says where each table is.
+  const newest = {};
+  for (const snap of hud.snaps) for (const [name, camera] of Object.entries(snap.cameras || {})) newest[name] = camera;
+  return Object.entries(newest).flatMap(([name, camera]) => (camera.places || [])
+    .map((p) => ({ ...p, camera: name, since: p.since_s ? p.since_s + now - camera.t : 0 })));
+}
+
+function renderFloor() {
+  loadFloor();
+  const places = floorPlaces();
+  const order = state?.cameras || [];
+  const key = JSON.stringify(places.map((p) => [p.camera, p.id, p.name, p.state, p.count, p.note, Math.floor(p.since)]));
+  if (key === hud.keys.floor) return;
+  hud.keys.floor = key;
+  const byCamera = new Map();
+  for (const p of places) {
+    if (!byCamera.has(p.camera)) byCamera.set(p.camera, []);
+    byCamera.get(p.camera).push(p);
+  }
+  const names = [...byCamera.keys()].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  const nodes = names.map((name) => {
+    const list = byCamera.get(name).sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true }));
+    const block = element("section", "floor-camera");
+    const head = element("h2", "floor-head");
+    const site = siteOf(name);
+    const busy = list.filter((p) => p.state && p.state !== "free").length;
+    head.append(element("span", null, name), element("small", null, [site && site !== name ? site : "", `${busy} of ${list.length} in use`]
+      .filter(Boolean).join(" · ")));
+    const grid = element("div", "floor-grid");
+    for (const p of list) {
+      const tile = element("button", "floor-tile");
+      tile.type = "button";
+      tile.dataset.state = p.state || "busy";
+      const count = p.count ? plural(p.count, p.kind && p.kind !== "table" ? "person" : "guest", p.kind && p.kind !== "table" ? "people" : "guests") : "";
+      const line = [count, p.since && p.state !== "free" ? mmss(p.since) : ""].filter(Boolean).join(" · ");
+      tile.append(element("b", null, p.name), element("span", "floor-state", PLACE_WORD[p.state] || words(p.state || "")));
+      if (line) tile.append(element("small", "floor-line", line));
+      if (p.note) tile.append(element("small", "floor-note", p.note));
+      tile.setAttribute("aria-label", [p.name, PLACE_WORD[p.state] || p.state, line, p.note, `Show ${name}`].filter(Boolean).join(", "));
+      tile.addEventListener("click", () => chooseCamera(order.includes(name) ? name : null));
+      grid.append(tile);
+    }
+    block.append(head, grid);
+    return block;
+  });
+  if (!nodes.length) nodes.push(element("p", "note", "No tables are marked yet."));
+  $("floor").replaceChildren(...nodes);
+}
+
+setInterval(pollOverlay, HUD_POLL_MS);
+setInterval(() => {
+  if (screen !== "live" || !hud.ok) return;
+  if (mapShown()) renderFloor();
+  renderTimeline();
+}, 1000);
+addEventListener("resize", () => {
+  if (screen === "live" && hud.ok) renderTimeline(true);
+});
+
 /* ---------- Cameras ---------- */
 
 // Where the picture comes from. Only one place feeds the camera: security cameras through camera.py
@@ -4084,12 +5627,14 @@ async function refreshState() {
   $("spend-fill").style.width = `${Math.min(100, (spent / limit) * 100)}%`;
   $("s-spend").textContent = "$" + spent.toFixed(3);
   renderControls(state.controls);
-  if (keys.wall !== JSON.stringify(state.wall)) {
-    keys.wall = JSON.stringify(state.wall);
+  $("demo-pill").hidden = !state.demo;
+  if (keys.wall !== JSON.stringify([state.wall, state.cameras])) {
+    keys.wall = JSON.stringify([state.wall, state.cameras]);
     shapeFrame();
   }
   renderActions();
   renderLiveStrip();
+  renderViewBar();
   renderCameraKinds();
   renderSourcePill();
   if (screen === "cameras") renderCamerasScreen();
@@ -4396,6 +5941,8 @@ async function playStreams() {
     player.play().catch(() => {});
     return { name, player, hls };
   });
+  // The live overlay asks each player how far behind the live edge it plays.
+  for (const p of players) livePlayers.set(p.name, p);
   const [columns, rows] = state?.wall || [1, 1];
   const tileW = Math.round(1920 / columns);
   const tileH = Math.round((tileW * 9) / 16);
@@ -4434,6 +5981,7 @@ async function playStreams() {
       await wait(66);
     }
   } finally {
+    livePlayers.clear();
     for (const { player, hls } of players) {
       hls?.destroy();
       player.removeAttribute("src");
@@ -4803,7 +6351,7 @@ function answerCard(job, inSheet = false) {
   card.append(element("p", "ask-answer", job.answer || ""));
   const moments = job.moments || [];
   const lead = moments.find((m) => m.clip) || moments[0];
-  if (lead?.clip) card.append(clipNode(lead.clip, lead.picture, inSheet));
+  if (lead?.clip) card.append(clipNode(lead.clip, lead.picture, inSheet, clipInfo({ ...lead, cameras: lead.cameras || (lead.camera ? [lead.camera] : []) })));
   else if (lead?.picture) {
     const img = element("img", "answer-picture");
     img.src = lead.picture;

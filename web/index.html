@@ -59,6 +59,7 @@
         <header class="head">
           <h1>Live</h1>
           <span id="status" class="status">Starting</span>
+          <span id="demo-pill" class="demo-pill" hidden>Demo · recorded video in a loop</span>
           <a class="source-pill" href="#/cameras" aria-label="Cameras: change where the picture comes from"><span class="icon" data-icon="camera"></span><span id="source-name">Cameras</span><span class="icon" data-icon="arrow"></span></a>
         </header>
         <div class="camera-mode-bar" id="camera-mode-bar" hidden>
@@ -70,10 +71,20 @@
           <p id="camera-mode-note"></p>
         </div>
         <div class="focus" id="focus" hidden></div>
+        <!-- Which camera is large, and the picture or the floor map. -->
+        <div class="view-bar" id="view-bar" hidden>
+          <div class="camera-chips" id="camera-pick" role="group" aria-label="Cameras to show"></div>
+          <div class="segmented" role="tablist" aria-label="View" id="view-pick" hidden>
+            <button type="button" role="tab" aria-selected="true" data-live-view="picture">Picture</button>
+            <button type="button" role="tab" aria-selected="false" data-live-view="map">Map</button>
+          </div>
+        </div>
+        <div class="hud-stats" id="hud-stats" hidden></div>
         <div class="frame-wrap" id="frame-wrap">
         <div id="frame" class="frame">
           <video id="video" autoplay muted playsinline loop></video>
           <canvas id="overlay"></canvas>
+          <canvas id="hud" aria-hidden="true"></canvas>
           <img id="freeze" class="freeze" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="" hidden>
           <canvas id="ink"></canvas>
           <div id="tag" class="tag" hidden></div>
@@ -83,6 +94,9 @@
           <div id="tile-focus" class="tile-focus" hidden></div>
         </div>
         </div>
+        <div class="floor" id="floor" hidden aria-live="polite"></div>
+        <div class="hud-timeline" id="hud-timeline" hidden></div>
+        <div class="chips hud-layers" id="hud-layers" role="group" aria-label="What to draw on the picture" hidden></div>
         <div id="controls" class="controls" hidden></div>
         <div class="live-strip" id="live-strip"></div>
         <details class="numbers" hidden>
@@ -252,6 +266,12 @@
         </div>
       </section>
 
+      <!-- One person: their face, visits and sightings. -->
+      <section class="screen" data-screen="person" hidden>
+        <a class="back" href="#/actions"><span class="icon" data-icon="back"></span>People</a>
+        <div id="person-page"></div>
+      </section>
+
       <!-- Actions -->
       <section class="screen" data-screen="actions" hidden>
         <header class="head">
@@ -260,6 +280,16 @@
         <div id="phone-card"></div>
         <h2 class="section-title">People</h2>
         <div id="people-card"></div>
+        <section class="faces-today" id="faces-today" hidden></section>
+        <form class="people-search" id="people-search" role="search" autocomplete="off">
+          <label class="section-title small" for="people-words">Find a person</label>
+          <div class="search-row">
+            <input id="people-words" maxlength="200" enterkeyhint="search" placeholder="Find a person: man in a white checked shirt">
+            <button type="submit" class="pill-button small" id="people-find"><span class="icon" data-icon="search"></span>Find</button>
+          </div>
+          <p class="note" id="people-note" role="status"></p>
+          <div class="people-results" id="people-results"></div>
+        </form>
         <h2 class="section-title">Connected</h2>
         <ul id="actions" class="action-list"></ul>
         <form id="action-form" class="connect">
@@ -315,9 +345,28 @@
         <input id="tag-name" list="people-names" maxlength="60" placeholder="A name or a label, such as Regular 1">
         <button id="tag-send" type="submit" class="pill-button small">Tag</button>
       </div>
+      <div class="chips role-chips" id="tag-role" role="group" aria-label="Role, if you know it"></div>
       <p id="tag-note" class="note" role="status"></p>
     </form>
     <datalist id="people-names"></datalist>
+  </dialog>
+
+  <dialog id="name-sheet" class="sheet name-sheet" aria-labelledby="name-title">
+    <div class="sheet-head">
+      <strong id="name-title">Who is this?</strong>
+      <button id="name-close" type="button" class="icon-button" aria-label="Close"><span class="icon" data-icon="x"></span></button>
+    </div>
+    <form id="name-form" class="name-form" autocomplete="off">
+      <img id="name-face" class="name-face" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="">
+      <div class="name-fields">
+        <p class="note" id="name-seen"></p>
+        <label class="sr-only" for="name-input">Name</label>
+        <input id="name-input" list="people-names" maxlength="60" placeholder="A name or a label, such as Regular 4">
+        <div class="chips role-chips" id="name-role" role="group" aria-label="Role"></div>
+        <div class="form-row"><button type="submit" class="pill-button" id="name-save">Save</button></div>
+        <p class="note" id="name-note" role="status"></p>
+      </div>
+    </form>
   </dialog>
 
   <dialog id="pair" class="sheet" aria-labelledby="pair-title">
