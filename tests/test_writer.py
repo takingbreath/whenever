@@ -266,3 +266,25 @@ class ReviewGate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Metering(unittest.TestCase):
+    def test_a_writing_job_counts_reviews_and_sensor_checks_too(self):
+        class Client:
+            def _post(self, payload, *args, **kwargs):
+                return json.dumps({"usage": {"input_tokens": 1000, "output_tokens": 1000}})
+
+            def check_facts(self, *args, **kwargs):
+                return {"seen": True}, 0.01
+
+            def see(self, *args, **kwargs):
+                return []
+
+        meter = writer.Metered(Client())
+        meter._post({"model": writer.WRITER})
+        meter._post({"model": writer.SPARK})
+        meter.check_facts("q", [], [])
+        meter.see("gate", b"")
+        expected = (writer.wonder_cost({"input_tokens": 1000, "output_tokens": 1000}) +
+                    writer.spark_cost({"input_tokens": 1000, "output_tokens": 1000}) + 0.01 + writer.SEE_PRICE)
+        self.assertAlmostEqual(meter.cost, expected)

@@ -829,6 +829,41 @@ def describe_misses(sensor, misses):
     return text + " The recording shows the real event, so change the facts to match what it shows."
 
 
+SEE_PRICE = 0.0025   # one SAM call, as server.PRICE_SEE
+
+
+class Metered:
+    """The client for one writing job, adding up what every call costs: Wonder's turns, both reviewers,
+    and the checks of the sensors on a recording. Before, only Wonder's own turns were counted, so the
+    day's spend was lower than the real bill."""
+
+    def __init__(self, client):
+        self.client = client
+        self.cost = 0.0
+
+    def __getattr__(self, name):
+        return getattr(self.client, name)
+
+    def _post(self, payload, *args, **kwargs):
+        raw = self.client._post(payload, *args, **kwargs)
+        try:
+            usage = json.loads(raw).get("usage") or {}
+        except (TypeError, ValueError, AttributeError):
+            usage = {}
+        self.cost += wonder_cost(usage) if payload.get("model") == WRITER else spark_cost(usage)
+        return raw
+
+    def see(self, *args, **kwargs):
+        self.cost += SEE_PRICE
+        return self.client.see(*args, **kwargs)
+
+    def check_facts(self, *args, **kwargs):
+        answers = self.client.check_facts(*args, **kwargs)
+        self.cost += float(answers[1]) if isinstance(answers, tuple) and len(answers) > 1 and \
+            isinstance(answers[1], (int, float)) else 0.0
+        return answers
+
+
 def check_sensors(client, sensors, example, idle, motions=None):
     """Returns the problems found, as text for Wonder."""
     problems = []
@@ -1036,7 +1071,7 @@ def write_rule(client, folder, sentence, example=None, idle=None, progress=lambd
             text += f"\nMeasured from the recording:\n{measured}"
     # The full history goes with each call. Stored responses expired during a long pip install.
     history = [{"type": "message", "role": "user", "content": text}]
-    cost = 0.0
+    client = Metered(client)
     review = {"rounds": 0}
     for _ in range(MAX_TURNS):
         data = json.loads(client._post({
@@ -1044,7 +1079,6 @@ def write_rule(client, folder, sentence, example=None, idle=None, progress=lambd
             "reasoning": {"effort": "medium"}, "max_output_tokens": 16000,
             "store": False, "include": ["reasoning.encrypted_content"],
         }, timeout=240, retries=3))
-        cost += wonder_cost(data.get("usage") or {})
         history.extend(data.get("output", []))
         calls = [item for item in data.get("output", []) if item.get("type") == "function_call"]
         if not calls:
@@ -1055,15 +1089,15 @@ def write_rule(client, folder, sentence, example=None, idle=None, progress=lambd
             try:
                 output, done = handle(call, folder, client, example, idle, progress, motions, sentence, review)
             except ReviewFailed as e:
-                e.cost = cost   # the job ends here, but its turns were paid for
+                e.cost = client.cost   # the job ends here, but its turns and reviews were paid for
                 raise
             except (WriterError, ApiError, KeyError, ValueError) as e:
                 output, done = f"Error: {e}", None
             if done:
-                return done, cost
+                return done, client.cost
             history.append({"type": "function_call_output", "call_id": call["call_id"], "output": output})
     error = WriterError("Wonder did not finish the rule.")
-    error.cost = cost   # the turns were paid for, so the day's spend must count them
+    error.cost = client.cost   # the turns were paid for, so the day's spend must count them
     raise error
 
 
