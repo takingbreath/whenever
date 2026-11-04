@@ -15,14 +15,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install ffmpeg
-        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+      - uses: actions/checkout@v5
+      - name: Install ffmpeg and Python's venv
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg python3-venv
+      # The system Python 3.12, as on the server. A rule's jail can read only the system folders, so a
+      # Python from elsewhere, such as actions/setup-python in /opt, could not load its own library there.
       - name: Install the libraries
-        run: python -m pip install -r requirements.txt
+        run: python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt
       - name: Run the unit tests
-        run: python -m unittest discover tests
+        run: .venv/bin/python -m unittest discover tests
