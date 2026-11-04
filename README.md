@@ -307,6 +307,16 @@ The `deploy` folder holds a systemd unit, a Caddy site and a deploy script. The 
 
 To send a new version, run `deploy/deploy.sh <ssh host>` from this folder. It copies only the files that Git would publish.
 
+### A demo beside the real server
+
+`deploy/demo` sets up a second Whenever on the same machine, behind its own access code, for people to try every feature without your cameras. Its cameras are recorded clips that `camera.py` plays in a loop through the demo's own media server, so they look and behave like live cameras: a gate by day and by night, a driveway by day and by night, and a cafe. It has its own rules, people, alerts and data in `/srv/whenever/demo/app`.
+
+- **Set up once:** put the clips in `/srv/whenever/demo/footage`, then on the server run `sudo sh /srv/whenever/app/deploy/demo/setup.sh "<demo host>" <file with the demo code>`. Later deploys update the demo too.
+- **Money:** the demo has a small daily limit of its own (`WHENEVER_SPEND_LIMIT`) inside the owner's limit for both servers (`WHENEVER_SPEND_SHARED`). Each server reads the other's spend (`WHENEVER_SPEND_ALSO`), so together they stay inside the owner's budget, and the demo can never use the real cameras' whole day.
+- **Asleep when nobody watches:** with no page open for `WHENEVER_IDLE_PAUSE_S` (15 minutes), the demo stops paying for checks until a visitor comes back.
+- **Shared by many:** visitors cannot turn the demo's cameras off, and `WHENEVER_MAX_RULES` leaves room for their own Whenevers beside the starter ones. `WHENEVER_SITES` groups the cameras in the picker, such as Home and Cafe.
+- **Start again:** `sudo sh deploy/demo/reset.sh save` keeps the demo's starter Whenevers, tagged people and names. `reset.sh restore` puts them back after visitors changed them.
+
 ## Test
 
 To score a watch plan on every saved check of a Whenever, at no model cost:
