@@ -1,0 +1,28 @@
+# Runs the offline unit tests on Linux, where the Landlock and seccomp jail tests also run.
+# The tests need no Meta API key and make no paid call.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install ffmpeg
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+      - name: Install the libraries
+        run: python -m pip install -r requirements.txt
+      - name: Run the unit tests
+        run: python -m unittest discover tests
