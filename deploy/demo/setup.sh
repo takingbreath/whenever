@@ -20,9 +20,8 @@ install -m 600 /srv/whenever/app/.env "$demo/app/.env"
 install -m 600 "$code_file" "$demo/app/access.env"
 cp "$demo/app/deploy/demo/camera.env.demo" "$demo/app/camera.env"
 if [ ! -f "$demo/settings.env" ]; then
+  # The owner's one-day extras are for the real cameras. The demo keeps its own small limit.
   sed "s|^WHENEVER_HOST=.*|WHENEVER_HOST=$hosts|" "$demo/app/deploy/demo/settings.env.example" > "$demo/settings.env"
-  # The owner's one-day extras count for the demo's share too.
-  grep '^WHENEVER_SPEND_EXTRA=' /srv/whenever/settings.env >> "$demo/settings.env" || true
 fi
 chown -R whenever:whenever "$demo"
 
