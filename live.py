@@ -480,9 +480,10 @@ class Analyzer:
         if track.place and not guest and (tagged_staff or not sitting):
             if track.at_table != track.place:
                 track.at_table, track.at_table_since = track.place, t
-            if t - track.at_table_since >= STAFF_STAY_S:
+            table = next(tb for tb in cam.tables if tb.name == track.place)
+            # Only a table where guests already sit is served: new guests also stand there before they sit.
+            if t - track.at_table_since >= STAFF_STAY_S and (table.visit_start is not None or tagged_staff):
                 track.helper_t = t
-                table = next(tb for tb in cam.tables if tb.name == track.place)
                 table.staff_t = t
         else:
             track.at_table = None
