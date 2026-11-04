@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 JOURNAL_FILE = ROOT / "data" / "journal.db"
-KINDS = ("event", "end", "record", "action", "notify", "say", "draw", "image", "gallery", "log", "error")
+KINDS = ("event", "end", "record", "action", "notify", "say", "draw", "image", "gallery", "log", "error", "ask")
 MAX_ROWS = 5000
 MAX_TEXT = 300
 MAX_DATA_BYTES = 2000
@@ -70,11 +70,14 @@ class Journal:
         return [{"t": t, "rule": rule, "kind": kind, "name": name, "seconds": seconds, "text": text,
                  "values": json.loads(data or "{}")} for t, rule, kind, name, seconds, text, data in reversed(rows)]
 
-    def runs(self, rule_id):
-        """How many events a Whenever had, and when the last one was."""
+    def runs(self, rule_id, since=None):
+        """How many times a Whenever's thing happened, and when the last one was. A step that an armed
+        sensor saw during one of them is not another time."""
         with self.lock:
             count, last = self.db.execute(
-                "SELECT COUNT(*), MAX(t) FROM entries WHERE rule_id = ? AND kind = 'event'", (str(rule_id)[:20],)).fetchone()
+                "SELECT COUNT(*), MAX(t) FROM entries WHERE rule_id = ? AND kind = 'event' AND t >= ? "
+                "AND COALESCE(data, '') NOT LIKE '%\"step\": true%'",
+                (str(rule_id)[:20], float(since or 0))).fetchone()
         return count, last
 
     def summary(self):

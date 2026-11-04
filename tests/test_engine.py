@@ -40,8 +40,17 @@ class StateEvents(unittest.TestCase):
     def test_clear_time_is_set_per_sensor(self):
         self.assertEqual(feed([1, 1, 0, 0], clear=5.0), [(1, "on")])
 
-    def test_one_strong_hit_is_enough(self):
-        self.assertEqual(SensorState().observe(1.0, True, strong=True), "on")
+    def test_one_strong_hit_cannot_start_a_state(self):
+        # The second answer on the same frames repeated the same mistake: headlights on a closed gate.
+        state = SensorState()
+        self.assertIsNone(state.observe(1.0, True, strong=True))
+        self.assertIsNone(state.observe(2.0, False))
+        self.assertIsNone(state.observe(3.0, True, strong=True))
+
+    def test_two_checks_in_a_row_start_a_state(self):
+        state = SensorState()
+        self.assertIsNone(state.observe(1.0, True, strong=True))
+        self.assertEqual(state.observe(2.0, True, strong=True), "on")
 
     def test_late_result_is_ignored(self):
         state = SensorState()
@@ -71,9 +80,16 @@ class StateEvents(unittest.TestCase):
 
     def test_a_running_review_holds_a_state_on(self):
         state = SensorState("state", 3.0)
-        state.observe(1.0, True, True)
-        self.assertIsNone(state.observe(9.0, False, hold=True))
-        self.assertEqual(state.observe(10.0, False), "off")
+        state.observe(0.5, True)
+        state.observe(1.0, True)
+        self.assertIsNone(state.observe(5.0, False, hold=True))
+        self.assertEqual(state.observe(6.0, False), "off")
+
+    def test_a_slow_review_holds_for_one_more_clear_time_at_most(self):
+        state = SensorState("state", 3.0)
+        state.observe(0.5, True)
+        state.observe(1.0, True)
+        self.assertEqual(state.observe(9.0, False, hold=True), "off")
 
     def test_a_late_hit_counts_one_moment_once(self):
         state = SensorState("moment", 30.0)
@@ -82,7 +98,8 @@ class StateEvents(unittest.TestCase):
 
     def test_a_new_subject_restarts_the_state(self):
         state = SensorState("state", 30.0)
-        state.observe(1.0, True, True)
+        state.observe(0.5, True)
+        state.observe(1.0, True)
         self.assertEqual(state.next_subject(20.0), "next")
         self.assertEqual(state.on_since, 20.0)
         self.assertTrue(state.on)

@@ -12,7 +12,9 @@ import json
 import queue
 import sys
 import threading
+import time
 import traceback
+from collections import deque
 from pathlib import Path
 
 STATE_FILE = Path("data/state.json")
@@ -76,6 +78,172 @@ class Check:
         return f"Check({self.frame}, passed={self.passed}, confidence={self.confidence})"
 
 
+def _box(thing):
+    """(x1, y1, x2, y2) from a box, a dict with a box, or a Found or a Place."""
+    box = getattr(thing, "box", None)
+    if box is None and isinstance(thing, dict):
+        box = thing.get("box")
+    box = thing if box is None else box
+    x1, y1, x2, y2 = (float(v) for v in box)
+    return x1, y1, x2, y2
+
+
+def center(thing):
+    """The middle of a box, as (x, y). Boxes run from 0 to 1 across a camera's picture."""
+    x1, y1, x2, y2 = _box(thing)
+    return (x1 + x2) / 2, (y1 + y2) / 2
+
+
+def foot(thing):
+    """The middle of a box's bottom edge, where a standing person or a parked car touches the ground."""
+    x1, _, x2, y2 = _box(thing)
+    return (x1 + x2) / 2, y2
+
+
+def seat(thing):
+    """A point three quarters down a box, as (x, y): where a sitting person sits, near the edge of the
+    table or desk they sit at, whether the camera sees their legs or not. For a person who stands, it is
+    the legs. Use it to put people at tables, desks, beds or counters."""
+    x1, y1, x2, y2 = _box(thing)
+    return (x1 + x2) / 2, y1 + 0.75 * (y2 - y1)
+
+
+def inside(point, place):
+    """True if a point (x, y) lies in a place. A box or a Found counts by its middle."""
+    if not (isinstance(point, (tuple, list)) and len(point) == 2):
+        point = center(point)
+    x1, y1, x2, y2 = _box(place)
+    return x1 <= point[0] <= x2 and y1 <= point[1] <= y2
+
+
+def overlap(a, b):
+    """How much two boxes cover each other, from 0 (apart) to 1 (the same box)."""
+    ax1, ay1, ax2, ay2 = _box(a)
+    bx1, by1, bx2, by2 = _box(b)
+    common = max(0.0, min(ax2, bx2) - max(ax1, bx1)) * max(0.0, min(ay2, by2) - max(ay1, by1))
+    union = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - common
+    return common / union if union > 0 else 0.0
+
+
+def share_inside(thing, place):
+    """The share of a box's area that lies in a place, from 0 to 1."""
+    x1, y1, x2, y2 = _box(thing)
+    px1, py1, px2, py2 = _box(place)
+    common = max(0.0, min(x2, px2) - max(x1, px1)) * max(0.0, min(y2, py2) - max(y1, py1))
+    area = (x2 - x1) * (y2 - y1)
+    return common / area if area > 0 else 0.0
+
+
+def place_of(thing, places, point=center, near=0.0):
+    """The name of the place that holds a thing's point, or None. places is a list of Place, or a dict of
+    name to box. point is center, seat for people at tables, desks or counters, or foot for things that
+    stand on a floor, such as people in a doorway or cars. When no place holds the point, the nearest
+    place counts if the point is less than near times that place's size away from it: near=0.5 counts a
+    person on a chair beside a table. Of several places that
+    hold the point, the smallest wins. A Found only fits a Place of its own camera."""
+    items = places.items() if isinstance(places, dict) else [(p.name, p) for p in places]
+    x, y = point(thing)
+    best = None
+    for name, place in items:
+        camera = getattr(place, "camera", None)
+        if camera and getattr(thing, "camera", None) and camera != thing.camera:
+            continue
+        x1, y1, x2, y2 = _box(place)
+        size = max(x2 - x1, y2 - y1, 1e-6)
+        away = max(x1 - x, 0.0, x - x2, y1 - y, 0.0, y - y2) / size
+        if away > near:
+            continue
+        rank = (away, (x2 - x1) * (y2 - y1))
+        if best is None or rank < best[0]:
+            best = (rank, name)
+    return best[1] if best else None
+
+
+class Place:
+    """A named place in one camera, such as "table 3". box is (x1, y1, x2, y2) from 0 to 1."""
+
+    def __init__(self, name="", camera="", box=(0.0, 0.0, 1.0, 1.0)):
+        self.name = name
+        self.camera = camera
+        self.box = tuple(float(v) for v in box)
+
+    def __repr__(self):
+        return f"Place({self.name!r}, {self.camera}, {self.box})"
+
+
+class Found:
+    """One thing that the local detector found in one camera's picture of a frame. box is (x1, y1, x2,
+    y2) from 0 to 1 in that picture. id stays the same while the thing stays about where it was. stayed
+    is how many seconds it has been in about this spot: a seated person or a parked car stays, and a
+    passer-by does not. tall is the box's height over its width in pixels: a person who stands is about
+    2.5 or more, and one who sits is about 2 or less, seen from a camera on a wall. place is the name of
+    its place, when ctx.detect got places."""
+
+    def __init__(self, frame=None, camera="", label="", confidence=0.0, box=(0.0, 0.0, 0.0, 0.0), id=None, place=None,
+                 stayed=0.0, tall=0.0):
+        self.frame = frame
+        self.camera = camera
+        self.label = label
+        self.confidence = confidence
+        self.box = tuple(float(v) for v in box)
+        self.id = id
+        self.place = place
+        self.stayed = stayed
+        self.tall = tall
+
+    def __repr__(self):
+        return f"Found({self.label} {self.id} in {self.place or self.camera}, confidence={self.confidence})"
+
+
+class Tracker:
+    """Gives each found thing a number across looks. A thing keeps the number of the thing of its kind,
+    in the same camera, whose box it covers most in the newest earlier look, if they cover each other
+    at least min_overlap, and if that thing was seen in the last max_gap_s. It suits things that move a
+    little between looks, such as people at tables or a parked car, not a runner between far looks."""
+
+    STAY_OVERLAP = 0.5   # a thing that still covers half of the box where it stopped has stayed there
+
+    def __init__(self, min_overlap=0.3, max_gap_s=30.0):
+        self.min_overlap = min_overlap
+        self.max_gap_s = max_gap_s
+        self.tracks = {}   # number: [camera, label, box, t, the box where it stopped, since when]
+        self.newest = {}   # camera: the time of its newest look
+        self.numbers = itertools.count(1)
+
+    def number(self, found, t):
+        """Sets .id on each Found of one look at time t, in one camera."""
+        if not found:
+            return
+        camera = found[0].camera
+        older = t < self.newest.get(camera, t)
+        open_tracks = {n: track for n, track in self.tracks.items()
+                       if track[0] == camera and abs(t - track[3]) <= self.max_gap_s}
+        pairs = sorted(((overlap(item, track[2]), i, n) for i, item in enumerate(found)
+                        for n, track in open_tracks.items() if track[1] == item.label), reverse=True)
+        taken = set()
+        for score, i, n in pairs:
+            if score < self.min_overlap or found[i].id is not None or n in taken:
+                continue
+            item, track = found[i], open_tracks[n]
+            item.id = n
+            taken.add(n)
+            stopped, since = track[4], track[5]
+            if overlap(item.box, stopped) < self.STAY_OVERLAP:
+                stopped, since = item.box, t
+            item.stayed = max(0.0, t - since)
+            if not older:
+                self.tracks[n] = [camera, item.label, item.box, t, stopped, since]
+        if older:
+            return  # a look back in time keeps the numbers it fits, and changes no track
+        for item in found:
+            if item.id is None:
+                item.id = next(self.numbers)
+                self.tracks[item.id] = [camera, item.label, item.box, t, item.box, t]
+        self.newest[camera] = t
+        for n in [n for n, track in self.tracks.items() if t - track[3] > self.max_gap_s]:
+            del self.tracks[n]
+
+
 class Event:
     """What fired: the frames that proved it, and what the sensor saw."""
 
@@ -99,6 +267,9 @@ class Context:
     Set ctx.aim_finds to False to test a thing that ctx.aim cannot find. Set ctx.past to the
     journal rows that history returns.
     ctx.asked lists each (question, model), and ctx.armed holds each armed sensor with its seconds.
+    Set ctx.detected to the Found items that detect returns, and ctx.place_list to the Places that places
+    returns.
+    ctx.pointed is what the person pointed at, from pointed.json, or None. A test can set it.
     """
 
     def __init__(self, state=None, folder=".", call=None):
@@ -114,7 +285,15 @@ class Context:
         self.past = []
         self.asked = []
         self.armed = {}
+        self.detected = []
+        self.place_list = []
+        self.tracker = Tracker()
+        self._steady = {}
         self._call = call
+        try:
+            self.pointed = json.loads((Path(self.folder) / "pointed.json").read_text())
+        except (OSError, ValueError):
+            self.pointed = None
 
     @property
     def event(self):
@@ -145,11 +324,12 @@ class Context:
             return self.frames(count=1)
         return [frames] if isinstance(frames, Frame) else list(frames)
 
-    def frames(self, before=2.0, after=0.0, count=8):
-        """Frames around the event, or around now, in time order. after waits for later frames."""
+    def frames(self, before=2.0, after=0.0, count=8, at=None):
+        """Frames around the event, or around now, in time order. after waits for later frames.
+        at is a time to look around instead, such as the time of an event that on_tick still handles."""
         if not self._call:
             return self._test_frames(max(int(count), 1))
-        t = self.event.t if self.event else None
+        t = float(at) if at is not None else (self.event.t if self.event else None)
         reply = self._call("frames", t=t, before=float(before), after=float(after), count=int(count))
         return [Frame(**item) for item in reply]
 
@@ -166,8 +346,9 @@ class Context:
         frame = frames[best - 1] if 1 <= best <= len(frames) else (frames[0] if frames else None)
         return Answer(reply["answer"], reply["confidence"], frame, model)
 
-    def check(self, claim, frames=None, model="spark", reference=None):
-        """A model judges each frame alone against a claim. Returns Checks, the best first."""
+    def check(self, claim, frames=None, model="spark", reference=None, place=None):
+        """A model judges each frame alone against a claim. Returns Checks, the best first. place, a Place
+        or a Found, makes the model see only a close-up of it in its camera, at full size."""
         frames = self._list(frames)
         if not self._call:
             self.asked.append((str(claim), model))
@@ -176,8 +357,10 @@ class Context:
                 passed, confidence = self.checks.pop(0) if self.checks else (True, 0.9)
                 found.append(Check(frame, passed, confidence, "test view", model))
             return sorted(found, key=lambda c: (c.passed, c.confidence), reverse=True)
+        # A reference is a Frame, or a picture in this folder such as ctx.pointed["reference"].
+        reference = str(getattr(reference, "name", reference))[:200] if reference else None
         reply = self._call("check", claim=str(claim)[:1000], frames=[f.name for f in frames], model=model,
-                           reference=reference.name if reference else None, check=self._check())
+                           reference=reference, place=_place_arg(place), check=self._check())
         by_name = {f.name: f for f in frames}
         return [Check(by_name[item["name"]], item["passed"], item["confidence"], item["seen"], model)
                 for item in reply]
@@ -188,6 +371,69 @@ class Context:
         if not self._call:
             return list(self.found)
         return self._call("find", thing=str(thing)[:60], frame=frame.name, check=self._check())
+
+    def detect(self, things="person", frames=None, camera=None, places=None, min_confidence=0.35, region=None,
+               near=0.5):
+        """The local detector finds common things, such as "person", "car" or "chair", in each camera of
+        each frame. It runs on the server's CPU and costs nothing. Returns a list of Found, in time order.
+
+        things is one word or a list. camera limits it to one camera. places, a list of Place, sets
+        each Found's place: the place that holds its seat point, or the nearest one less than near times
+        that place's size away. region, a box from 0 to 1, makes it look only there, at more pixels, which
+        finds small far things better. Each Found gets an id that stays while the thing stays put.
+        """
+        frames = self._list(frames)
+        words = [things] if isinstance(things, str) else list(things)
+        if not self._call:
+            found = [item if isinstance(item, Found) else Found(**item) for item in self.detected]
+        else:
+            by_name = {f.name: f for f in frames}
+            reply = self._call("detect", things=[str(w)[:40] for w in words][:8], frames=[f.name for f in frames],
+                               camera=str(camera) if camera else None, min_confidence=float(min_confidence),
+                               region=list(_box(region)) if region else None, check=self._check())
+            found = [Found(by_name.get(item["frame"]), item["camera"], item["label"], item["confidence"], item["box"],
+                           tall=item.get("tall", 0.0)) for item in reply]
+        looks = {}
+        for item in found:
+            looks.setdefault((item.camera, item.frame.t if item.frame else 0.0), []).append(item)
+        for (_, t), items in sorted(looks.items(), key=lambda pair: pair[0][1]):
+            self.tracker.number(items, t)
+        if places:
+            for item in found:
+                item.place = place_of(item, places, point=seat, near=near)
+        return found
+
+    def places(self, thing, camera=None):
+        """Every such thing in the cameras that stay still, such as "table", each as a Place with a name
+        such as "table 3", numbered by rows from the top left. SAM finds them once in each camera, which
+        costs one small call, and your folder keeps them."""
+        if not self._call:
+            return [item if isinstance(item, Place) else Place(**item) for item in self.place_list]
+        reply = self._call("places", thing=str(thing)[:40], camera=str(camera) if camera else None,
+                           check=self._check())
+        return [Place(item["name"], item["camera"], item["box"]) for item in reply]
+
+    def steady(self, key, value, looks=3):
+        """value once it has been the same in this many calls in a row with this key, or else the last
+        such value, None at first. A count from one picture can flicker, as people pass each other."""
+        seen = self._steady.get(key)
+        if seen is None or seen["recent"].maxlen != max(1, int(looks)):
+            seen = self._steady[key] = {"recent": deque(maxlen=max(1, int(looks))), "value": None}
+        seen["recent"].append(value)
+        if len(seen["recent"]) == seen["recent"].maxlen and all(v == value for v in seen["recent"]):
+            seen["value"] = value
+        return seen["value"]
+
+    def since(self, key, true, t=None):
+        """How many seconds a condition has been true without a break, such as a table that is taken and
+        not served. 0 while it is false. ctx.state keeps each start, so a restart does not reset it."""
+        if t is None:
+            t = self.event.t if self.event else time.time()
+        starts = self.state.setdefault("since", {})
+        if not true:
+            starts.pop(str(key), None)
+            return 0.0
+        return max(0.0, float(t) - starts.setdefault(str(key), float(t)))
 
     def gallery(self, thing, frames=None, count=6, caption=""):
         """Finds a thing across frames, and shows a row of zoomed pictures, the best first.
@@ -235,7 +481,7 @@ class Context:
             # The first check also covers the frames since the event, because a rule can
             # spend many seconds on models before it decides to wait.
             since = self.event.t if self.event else None
-            self._call("arm", sensor=str(sensor), seconds=float(seconds), since=since)
+            self._call("arm", sensor=str(sensor), seconds=float(seconds), since=since, check=self._check())
         else:
             self.armed[str(sensor)] = float(seconds)
 
@@ -269,7 +515,8 @@ class Context:
         """Adds a measured fact to the journal, so a later report can count or compare it."""
         plain = (str, int, float, bool, type(None))
         self._record("record", name=str(name)[:60],
-                     values={str(k): v if isinstance(v, plain) else str(v) for k, v in values.items()})
+                     values={str(k): v if isinstance(v, plain) else str(v) for k, v in values.items()},
+                     check=self._check())
 
     def history(self, kind=None, name=None, rule=None, since=None, until=None, limit=2000):
         """Reads the journal of all rules, oldest first. Each item is a dict with t, rule, kind, name,
@@ -278,10 +525,14 @@ class Context:
             return [dict(item) for item in self.past]
         return self._call("history", kind=kind, name=name, rule_name=rule, since=since, until=until, limit=int(limit))
 
-    def notify(self, text, picture=None):
-        """Shows an alert, and sends it to the person's phone if they have a phone action."""
+    def notify(self, text, picture=None, at=None):
+        """Shows an alert, and sends it to the person's phone if they have a phone action.
+
+        An alert about an event shows that event's cameras and clip. From on_tick, pass at, the time
+        of the event it is about. A later alert of the same event with no new picture stays on the page."""
         path = picture.path if isinstance(picture, Frame) else (str(picture) if picture else None)
-        self._record("notify", text=str(text)[:300], picture=path)
+        self._record("notify", text=str(text)[:300], picture=path, check=self._check(),
+                     at=float(at) if at is not None else None)
 
     def say(self, text):
         self._record("say", text=str(text)[:300])
@@ -290,7 +541,14 @@ class Context:
         self._record("show", name=str(name)[:60], value=str(value)[:200])
 
     def log(self, text):
-        self._record("log", text=str(text)[:300])
+        self._record("log", text=str(text)[:300], check=self._check())
+
+
+def _place_arg(place):
+    if place is None:
+        return None
+    return {"camera": str(getattr(place, "camera", "") or (place.get("camera", "") if isinstance(place, dict) else "")),
+            "box": list(_box(place))}
 
 
 def call(module, name, *args):

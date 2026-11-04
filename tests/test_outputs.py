@@ -68,8 +68,11 @@ class Secrets(unittest.TestCase):
         self.secrets.write_text("HUE_USER=abc123secret\nNTFY_TOPIC=whenever-test\n")
         self.opener = FakeOpener()
 
-    def connectors(self, **kwargs):
-        return Connectors(secrets_path=self.secrets, opener=self.opener, **kwargs)
+    def connectors(self, paired=True, **kwargs):
+        actions = Connectors(secrets_path=self.secrets, opener=self.opener, **kwargs)
+        if paired:
+            actions.channels.add_ntfy()
+        return actions
 
 
 class Drafts(unittest.TestCase):
@@ -193,12 +196,22 @@ class Phone(Secrets):
         self.assertEqual([name for name, _ in sent], ["Phone"])
         self.assertEqual(len(self.opener.requests), 1)
 
-    def test_with_no_topic_the_phone_is_not_ready(self):
-        self.secrets.write_text("")
-        actions = self.connectors()
+    def test_with_nothing_paired_the_phone_is_not_ready(self):
+        actions = self.connectors(paired=False)
         self.assertEqual(actions.ready(), [])
         self.assertEqual(actions.alert("Hello"), [])
-        self.assertEqual(actions.public()[0]["missing"], ["NTFY_TOPIC"])
+        self.assertEqual(actions.public()[0]["missing"], ["a paired phone"])
+        with self.assertRaisesRegex(ActionError, "Pair a phone"):
+            actions.run("Phone", {"text": "Hello"})
+
+    def test_one_alert_reaches_every_paired_place_and_each_one_reports(self):
+        actions = self.connectors()
+        actions.channels.places["email"].append({"id": "e1", "address": "a@example.com", "t": 0})
+        result = actions.run("Phone", {"text": "Hello", "title": "Gate"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], 207)
+        self.assertEqual([(p["kind"], p["ok"]) for p in result["places"]], [("email", False), ("ntfy", True)])
+        self.assertIn("SES", result["places"][0]["detail"])
 
 
 class Journals(unittest.TestCase):
@@ -264,6 +277,7 @@ class App(unittest.TestCase):
         self.opener = FakeOpener()
         self.app = server.App(object(), self.logs, inline=True,
                               connectors=Connectors(secrets_path=secrets, opener=self.opener))
+        self.app.channels.add_ntfy()
         self.rule = server.Rule(self.app, "r1", "Tell me", {"name": "Gate", "sensors": [], "schedules": [
             {"id": "report", "every_minutes": 1, "at": "", "days": []}]}, Path(self.logs))
         self.rule.sent = []

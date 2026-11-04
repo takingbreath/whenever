@@ -1,0 +1,25 @@
+# MediaMTX for Whenever: relays each camera as it is, keeps a 12-hour buffer, and cuts clips.
+# It listens only on this computer. Install: /etc/systemd/system/whenever-media.service.
+
+[Unit]
+Description=Whenever: media server for the cameras' own video
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=whenever
+Group=whenever
+WorkingDirectory=/srv/whenever/media
+ExecStart=/srv/whenever/media/mediamtx /srv/whenever/app/deploy/mediamtx.yml
+Restart=always
+RestartSec=5
+Nice=5
+MemoryMax=2G
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/whenever/media
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

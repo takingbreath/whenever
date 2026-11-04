@@ -1,4 +1,4 @@
-"""The person's actions: an alert on their phone, or any web request that they approved.
+"""The person's actions: an alert to their phone, or any web request that they approved.
 
 Rule code has no network. It names an action, and this file sends the request. A request goes only
 to the host that the person approved, and it follows no redirect. A key stays in actions.env, so it
@@ -36,13 +36,14 @@ TIMEOUT_S = 10
 # A hosted server must not reach its own network for a visitor, so it sends only to public hosts.
 PUBLIC = os.environ.get("WHENEVER_PUBLIC") == "1"
 
+# channels.py sends it to every place that the person paired: a browser, Telegram, email or ntfy.
 PHONE = {
     "name": "Phone", "kind": "phone", "alerts": True,
-    "description": "Sends an alert to the person's phone, with a picture if you pass one.",
+    "description": "Sends each alert to every place under Where alerts go, with the cameras where it happened.",
     "inputs": [{"name": "text", "description": "The alert, in one or two short sentences", "example": "A car blocks the gate"},
                {"name": "title", "description": "A short title, or leave it out", "example": "Gate"}],
-    "secrets": [{"name": "NTFY_TOPIC", "description": "The ntfy topic that the phone app follows"}],
-    "method": "POST", "url": f"{NTFY_SERVER}/{{secret:NTFY_TOPIC}}",
+    "secrets": [],
+    "method": "POST", "url": "https://wheneverwhatever.si/alerts",
 }
 
 
@@ -70,6 +71,15 @@ def read_secrets(path):
         if sep and SECRET.fullmatch(name.strip()):
             found[name.strip()] = value.strip()
     return found
+
+
+def write_secret(path, name, value):
+    """Adds or replaces one NAME=value line. Only the owner can read the file."""
+    path = Path(path)
+    lines = path.read_text().splitlines() if path.exists() else ["# Keys for actions. Git ignores this file."]
+    lines = [line for line in lines if line.partition("=")[0].strip() != name] + [f"{name}={value}"]
+    path.write_text("\n".join(lines) + "\n")
+    os.chmod(path, 0o600)
 
 
 def header_text(text):
@@ -165,11 +175,18 @@ def check_draft(draft, taken=()):
 
 
 class Connectors:
-    def __init__(self, path=None, secrets_path=SECRETS_FILE, opener=None):
-        """With no path, actions live only in memory, as in tests."""
+    def __init__(self, path=None, secrets_path=SECRETS_FILE, opener=None, channels=None):
+        """With no path, actions live only in memory, as in tests. channels sends the Phone alerts."""
         self.path = Path(path) if path else None
         self.secrets_path = secrets_path
         self.opener = opener or OPENER
+        if channels is None:
+            # Here, not at the top: channels.py uses this file's helpers.
+            from channels import Channels
+            channels = Channels(secrets_path=secrets_path, opener=self.opener)
+        self.channels = channels
+        # The address of this server, for alert pictures that a browser fetches. The server sets it.
+        self.base_url = None
         self.lock = threading.Lock()
         self.items = []
         if self.path and self.path.exists():
@@ -194,6 +211,8 @@ class Connectors:
         return found
 
     def missing(self, action, secrets=None):
+        if action["kind"] == "phone":
+            return [] if self.channels and self.channels.paired() else ["a paired phone"]
         secrets = read_secrets(self.secrets_path) if secrets is None else secrets
         return [item["name"] for item in action["secrets"] if not secrets.get(item["name"])]
 
@@ -237,18 +256,21 @@ class Connectors:
     def run(self, name, inputs=None, picture=None, click=None):
         return self.send(self.get(name), inputs, picture, click)
 
-    def alert(self, text, picture=None, click=None):
+    def alert(self, text, picture=None, click=None, title=None):
         """ctx.notify reaches every ready action that takes alerts, such as the phone."""
         done = []
         for action in self.ready():
             if action["alerts"]:
-                done.append((action["name"], self.send(action, {"text": text}, picture, click)))
+                done.append((action["name"], self.send(action, {"text": text, "title": title or "Whenever"},
+                                                       picture, click)))
         return done
 
     def send(self, action, inputs=None, picture=None, click=None):
         """Sends one request. click is a page that a phone alert opens when the person taps it."""
         secrets = read_secrets(self.secrets_path)
         missing = self.missing(action, secrets)
+        if missing and action["kind"] == "phone":
+            raise ActionError("Pair a phone first, under Actions.")
         if missing:
             raise ActionError(f"{action['name']} needs {', '.join(missing)} in actions.env.")
         inputs = {str(k): v for k, v in (inputs or {}).items()}
@@ -258,9 +280,8 @@ class Connectors:
         if picture is not None and len(picture) > MAX_PICTURE_BYTES:
             raise ActionError("The picture is too large to send.")
         if action["kind"] == "phone":
-            request = self._phone(action, inputs, secrets, picture, click)
-        else:
-            request = self._web(action, inputs, secrets)
+            return self._phone(inputs, picture, click)
+        request = self._web(action, inputs, secrets)
         host = urllib.parse.urlsplit(request.full_url).hostname
         if PUBLIC and not public_host(host):
             raise ActionError(f"{host} is not on the public internet.")
@@ -277,16 +298,15 @@ class Connectors:
                 text = text.replace(value, "***")
         return {"ok": 200 <= status < 300, "status": status, "reply": text[:MAX_REPLY_CHARS]}
 
-    def _phone(self, action, inputs, secrets, picture, click=None):
-        url = fill_text(action["url"], {}, secrets)
-        text = str(inputs.get("text") or "Whenever").strip()[:MAX_VALUE_CHARS]
-        headers = {"Title": header_text(inputs.get("title") or "Whenever")}
-        if click and str(click).startswith("https://"):
-            headers["Click"] = str(click)
-        if picture is None:
-            return urllib.request.Request(url, data=text.encode(), headers=headers, method="POST")
-        headers.update({"Message": header_text(text), "Filename": "picture.jpg"})
-        return urllib.request.Request(url, data=picture, headers=headers, method="PUT")
+    def _phone(self, inputs, picture, click=None):
+        """One alert to every paired place. It worked if one place took it, and each place reports."""
+        places = self.channels.alert(inputs.get("text"), inputs.get("title") or "Whenever", picture, click,
+                                     self.base_url)
+        sent = [p["label"] for p in places if p["ok"]]
+        failed = [f"{p['label']} ({p['detail']})" for p in places if not p["ok"]]
+        reply = "; ".join(filter(None, [sent and "Sent to " + ", ".join(sent), failed and "Failed: " + ", ".join(failed)]))
+        status = 200 if sent and not failed else 207 if sent else 502
+        return {"ok": bool(sent), "status": status, "reply": reply[:MAX_REPLY_CHARS], "places": places}
 
     def _web(self, action, inputs, secrets):
         for item in action["inputs"]:

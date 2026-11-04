@@ -1,0 +1,39 @@
+# Whenever's security cameras, read on the server itself. camera.py reads camera.env in
+# /srv/whenever/app, and an EZVIZ camera goes through EZVIZ's cloud with ezviz_token.json there.
+# Install: /etc/systemd/system/whenever-cameras.service. It uses the server's own access code.
+
+[Unit]
+Description=Whenever: security cameras read on the server
+After=whenever.service whenever-media.service
+Wants=whenever.service whenever-media.service
+
+[Service]
+User=whenever
+Group=whenever
+WorkingDirectory=/srv/whenever/app
+Environment=WHENEVER_PORT=8787
+# Each camera goes to the media server as it is. Full decoding runs only while something changes, so it
+# uses the full picture: checks, zoom and clips keep every pixel.
+Environment=WHENEVER_MEDIA=rtsp://127.0.0.1:8554
+Environment=WHENEVER_FULL_WIDTH=2880
+# Full decoding makes a 2880 px JPEG for each frame it keeps, about three times the cost of the decoding
+# itself. At 8 a second, four cameras at once fell behind the live video on this 4-core server, up to
+# 47 s. 4 a second still gives a 2-second check 8 frames to choose from.
+Environment=WHENEVER_READ_FPS=4
+# For a page that cannot play the streams, the live wall goes out smaller.
+Environment=WHENEVER_LIVE_WIDTH=1280
+ExecStart=/srv/whenever/venv/bin/python camera.py
+Restart=always
+RestartSec=10
+# Decoding video is heavy, so the cameras give way to everything else on this server.
+Nice=10
+CPUQuota=300%
+MemoryMax=4G
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/whenever
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,6 @@
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -57,9 +58,14 @@ class FakeClient:
         self.marked.append(point or box)
         return self.marks
 
-    def name_object(self, jpeg, box):
+    def name_object(self, jpeg, box, crop=None):
         self.named += 1
-        return "water bottle", 0.001
+        self.name_pictures = (jpeg, crop)
+        return getattr(self, "noun", "water bottle"), 0.001
+
+    def same_object(self, noun, reference, camera, views):
+        self.compared_views = [(name, count) for name, _, count in views]
+        return getattr(self, "picks", {}), 0.002
 
     def locate(self, question, jpeg):
         self.located.append(question)
@@ -74,7 +80,7 @@ class FakeClient:
         self.looked.append((question, len(frames), model))
         return {"answer": self.reply, "confidence": 0.5, "best_frame": 1}, 0.01
 
-    def check_facts(self, question, facts, frames, moment=False):
+    def check_facts(self, question, facts, frames, moment=False, view=None):
         if self.fail:
             raise ApiError("Meta API did not answer in time.")
         self.asked.append(frames)
@@ -137,6 +143,7 @@ class FakeRule:
     def __init__(self, app, target="", **fields):
         self.id = "r"
         self.name = "fake"
+        self.sentence = ""
         self.pointed = None
         self.folder = None
         self.paused = False
@@ -247,7 +254,7 @@ class Review(TempLogs):
         app, rule = self.app_with([(True, 0.9)])
         app.client.part_seen = False
         app.client.answers = [False, True, False]
-        self.feed(app, [1, 2])
+        self.feed(app, [1, 2, 3])
         self.assertEqual(rule.sent[0]["type"], "on")
 
     def test_a_failed_check_is_read_by_a_review(self):
@@ -341,7 +348,8 @@ class Review(TempLogs):
     def test_a_review_never_reads_an_occurrence_that_already_ended(self):
         app, rule = self.app_with(clear_after_s=2.0)
         app.client.part_seen = False
-        app.client.answers = [True, True]
+        app.client.answers = [True]
+        rule.sensors[0].state.observe(0.5, True)  # the check before this one said yes
         self.feed(app, [1, 2, 3, 4])
         self.assertEqual([m["type"] for m in rule.sent], ["on", "off"])
         app.client.part_seen = True
@@ -362,12 +370,14 @@ class NewSubject(TempLogs):
 
     def run_state(self, same, doers=None, count=10):
         client = FakeClient(answer=False)
-        client.answers = [True, True]
+        client.answers = [True]
         client.reviews = [(True, 0.9)]
         client.doers = [doers or [{"who": "red polo", "best_frame": 5}]]
         client.same = same
         app = self.app(client)
         rule = FakeRule(app, clear_after_s=30.0)
+        # A state starts on the second check in a row that says yes. This is the first one.
+        rule.sensors[0].state.observe(0.5, True)
         for t in range(1, count):
             app.frame(b"f%d" % t, float(t))
         return app, rule
@@ -813,6 +823,7 @@ class StopAndResume(TempLogs):
         app = self.app(client)
         rule = FakeRule(app, **fields)
         app.frame(b"a", 1.0)
+        app.frame(b"a", 2.0)
         client.asked.clear()
         self.assertTrue(app.pause_rule("r"))
         return app, rule, client
@@ -896,6 +907,7 @@ class StopAndResume(TempLogs):
         app, rule, _ = self.stopped_rule()
         app.resume_rule("r")
         app.frame(b"after", time.time() + 1)
+        app.frame(b"after", time.time() + 2.5)
         self.assertEqual([m["type"] for m in rule.sent], ["on", "off", "on"])
 
     def test_a_waiting_job_ends_on_stop_and_the_sensor_stays_asleep(self):
@@ -984,33 +996,33 @@ class Plan(TempLogs):
 
 
 class Events(TempLogs):
-    def test_two_yes_on_the_same_frames_send_on_to_the_code(self):
+    def test_two_checks_in_a_row_on_new_frames_send_on_to_the_code(self):
         app = self.app(FakeClient(answer=True))
         rule = FakeRule(app)
-        out = app.frame(b"frame", 1.0)
+        self.assertIsNone(app.frame(b"one", 1.0)["results"][0]["event"])
+        out = app.frame(b"two", 2.0)
         self.assertEqual(out["results"][0]["event"], "on")
-        self.assertEqual(len(app.client.asked), 2)
-        self.assertEqual(app.client.asked[0], app.client.asked[1])
+        self.assertEqual(app.client.asked, [[b"one"], [b"two"]])
         self.assertEqual({k: rule.sent[0][k] for k in ("type", "sensor", "t")},
-                         {"type": "on", "sensor": "s", "t": 1.0})
+                         {"type": "on", "sensor": "s", "t": 2.0})
         self.assertEqual(rule.sent[0]["event"]["note"], "test")
 
     def test_one_random_yes_does_not_start_an_event(self):
         client = FakeClient(answer=False)
-        client.answers = [True, False]
+        client.answers = [True, False, True]
         app = self.app(client)
         rule = FakeRule(app)
-        out = app.frame(b"frame", 1.0)
-        self.assertFalse(out["results"][0]["hit"])
+        for t in (1.0, 2.0, 3.0):
+            app.frame(b"frame", t)
         self.assertEqual(rule.sent, [])
 
-    def test_a_running_state_needs_no_second_check(self):
+    def test_a_state_check_asks_once(self):
         app = self.app(FakeClient(answer=True))
         rule = FakeRule(app)
         app.frame(b"a", 1.0)
-        calls = len(app.client.asked)
-        app.frame(b"b", 3.0)
-        self.assertEqual(len(app.client.asked), calls + 1)
+        app.frame(b"b", 2.0)
+        app.frame(b"c", 3.0)
+        self.assertEqual(len(app.client.asked), 3)
         self.assertEqual(len(rule.sent), 1)
 
     def test_a_state_ends_after_its_clear_time(self):
@@ -1018,11 +1030,12 @@ class Events(TempLogs):
         app = self.app(client)
         rule = FakeRule(app, clear_after_s=2.0)
         app.frame(b"a", 1.0)
+        app.frame(b"a", 2.0)
         client.answer = False
-        app.frame(b"b", 2.0)
+        app.frame(b"b", 3.0)
         self.assertEqual(len(rule.sent), 1)
-        app.frame(b"c", 3.0)
-        self.assertEqual(rule.sent[-1], {"type": "off", "sensor": "s", "t": 3.0, "duration": 2.0})
+        app.frame(b"c", 4.0)
+        self.assertEqual(rule.sent[-1], {"type": "off", "sensor": "s", "t": 4.0, "duration": 2.0})
 
     def test_no_check_runs_before_it_is_due(self):
         app = self.app(FakeClient(answer=False))
@@ -1037,7 +1050,7 @@ class Events(TempLogs):
         rule = FakeRule(app, frames_per_check=8)
         for i in range(13):
             app.frame(bytes([i]), 1.0 + i * 0.25)
-        covered = [r for r in (app.evidence.check(f"c{n}") for n in range(1, 40)) if r]
+        covered = [r for r in (app.evidence.check(f"c{n}-{app.evidence.session}") for n in range(1, 40)) if r]
         total = sum(c["frames_covered"] for c in covered)
         self.assertEqual(total, 13)
         self.assertEqual(rule.sent, [])
@@ -1184,6 +1197,7 @@ class Draw(TempLogs):
         app = self.app(client)
         rule = FakeRule(app, outline="bottle", **fields)
         app.frame(b"frame", 1.0)
+        app.frame(b"frame", 2.0)
         return app, rule
 
     def feed(self, app, kind):
@@ -1195,7 +1209,7 @@ class Draw(TempLogs):
         check = rule.sent[0]["event"]["check"]
         app.draw(rule, "3 drinks", check=check)
         item = self.feed(app, "draw")[0]
-        self.assertEqual(item["frame"], f"/evidence/{app.evidence.session}/0000001.jpg")
+        self.assertEqual(item["frame"], f"/evidence/{app.evidence.session}/0000003.jpg")
         self.assertEqual(item["check"], check)
         self.assertEqual(item["text"], "3 drinks")
 
@@ -1275,6 +1289,31 @@ class Draw(TempLogs):
         self.assertEqual(client.marked, [rule.pointed["box"]])
         self.assertEqual(len(self.feed(app, "outline")), 1)
 
+    def test_in_a_moving_camera_the_old_box_is_not_used_and_the_look_decides(self):
+        client = FakeClient(answer=True)
+        client.matches = [segment(0, 10, 0.99), segment(70, 80, 0.5)]
+        client.picks = {"All cameras": 1}
+        app, rule = self.fired(client)
+        app.cameras = ["Gate tracker"]
+        app.camera_kinds.set("Gate tracker", "moving")
+        rule.folder = Path(self.logs)
+        (rule.folder / "pointed").mkdir()
+        (rule.folder / "pointed" / "clicked.jpg").write_bytes(solid_jpeg(20, 20))
+        rule.pointed = {"noun": "car", "box": segment(60, 90), "camera": "Gate tracker", "reference": "pointed/clicked.jpg"}
+        with mock.patch.object(server, "numbered", lambda jpeg, boxes: b"numbered"):
+            app.draw(rule, "moved")
+        self.assertEqual(client.compared_views, [("All cameras", 2)])
+        self.assertEqual(self.feed(app, "outline")[0]["outline"]["x1"], 0)
+
+    def test_in_a_still_camera_the_old_box_still_helps(self):
+        client = FakeClient(answer=True)
+        client.matches = [segment(0, 10, 0.99), segment(70, 80, 0.5)]
+        app, rule = self.fired(client)
+        app.cameras = ["Gate wide"]
+        rule.pointed = {"noun": "gate", "box": segment(60, 90), "camera": "Gate wide"}
+        app.draw(rule, "open")
+        self.assertEqual(self.feed(app, "outline")[0]["outline"]["x1"], 70)
+
     def test_a_tick_can_draw_on_the_newest_frame(self):
         client = FakeClient(answer=False)
         app, rule = self.fired(client)
@@ -1308,7 +1347,9 @@ class Draw(TempLogs):
         app, rule = self.fired(client)
         app.draw(rule, "seen")
         self.assertEqual(len(self.feed(app, "draw")), 1)
-        self.assertIn("outline failed", self.feed(app, "log")[0]["text"])
+        # The person's activity stays clean. The miss is a note under Problems.
+        self.assertEqual(self.feed(app, "log"), [])
+        self.assertIn("without an outline", app.problems.public()["groups"][0]["title"])
 
     def test_a_rule_message_reaches_the_draw(self):
         client = FakeClient(answer=True)
@@ -1320,12 +1361,19 @@ class Draw(TempLogs):
         self.assertEqual(rule.fired, 0)
 
 
+def solid_jpeg(width, height, colour=(90, 90, 90)):
+    from PIL import Image
+    out = BytesIO()
+    Image.new("RGB", (width, height), colour).save(out, "JPEG")
+    return out.getvalue()
+
+
 class Pointing(TempLogs):
     def test_a_click_finds_one_object_and_keeps_it(self):
         client = FakeClient()
         client.marks = [segment(10, 20)]
         app = self.app(client)
-        out = app.point(b"frame", 15, 5, 100, 100)
+        out = app.point(solid_jpeg(100, 100), 15, 5, 100, 100)
         self.assertTrue(out["found"])
         self.assertEqual(client.marked, [(15, 5)])
         self.assertEqual(app.see_calls, 1)
@@ -1333,32 +1381,289 @@ class Pointing(TempLogs):
 
     def test_a_click_on_nothing_keeps_nothing(self):
         app = self.app(FakeClient())
-        self.assertEqual(app.point(b"frame", 1, 1, 100, 100), {"found": False})
+        self.assertEqual(app.point(solid_jpeg(100, 100), 1, 1, 100, 100)["found"], False)
         self.assertEqual(len(app.points), 0)
 
-    def test_an_object_is_named_once(self):
+    def test_an_object_is_named_once_from_a_close_crop(self):
         client = FakeClient()
         client.marks = [segment(10, 20)]
         app = self.app(client)
-        point_id = app.point(b"frame", 15, 5, 100, 100)["id"]
+        point_id = app.point(solid_jpeg(100, 100), 15, 5, 100, 100)["id"]
         self.assertEqual(app.name_point(point_id), "water bottle")
         self.assertEqual(app.name_point(point_id), "water bottle")
         self.assertEqual(client.named, 1)
+        self.assertIsNotNone(client.name_pictures[1])
+        self.assertGreaterEqual(max(Image.open(BytesIO(app.point_crop(point_id))).size), server.POINT_CROP_SIDE)
 
     def test_old_points_are_dropped(self):
         client = FakeClient()
         client.marks = [segment(10, 20)]
         app = self.app(client)
         for _ in range(server.MAX_POINTS + 5):
-            app.point(b"f", 15, 5, 100, 100)
+            app.point(solid_jpeg(100, 100), 15, 5, 100, 100)
         self.assertEqual(len(app.points), server.MAX_POINTS)
 
     def test_no_click_runs_after_the_spend_limit(self):
         client = FakeClient()
         app = self.app(client)
         app.writer_usd = server.SPEND_LIMIT_USD
-        self.assertTrue(app.point(b"f", 1, 1, 100, 100)["stopped"])
+        self.assertTrue(app.point(solid_jpeg(100, 100), 1, 1, 100, 100)["stopped"])
         self.assertEqual(client.marked, [])
+
+    def wall(self, client):
+        """Two cameras side by side, as camera.py sends them."""
+        app = self.app(client)
+        app.wall, app.cameras = (2, 1), ["Gate wide", "Gate tracker"]
+        return app
+
+    def test_a_click_on_a_wall_goes_to_that_camera_alone(self):
+        client = FakeClient()
+        client.marks = [segment(40, 60)]
+        app = self.wall(client)
+        out = app.point(solid_jpeg(400, 100), 300, 50, 400, 100)
+        self.assertEqual(out["camera"], "Gate tracker")
+        # The tile is 200 wide, so the click sits at its middle, in the tile's own pixels.
+        self.assertEqual(client.marked, [(100, 50)])
+        # Back on the wall, the box moves into the right half: 200 + 40% and 60% of 200.
+        self.assertEqual((out["box"]["x1"], out["box"]["x2"], out["box"]["w"]), (280, 320, 400))
+
+    def test_a_fresh_full_frame_gives_the_camera_more_pixels(self):
+        client = FakeClient()
+        client.marks = [segment(40, 60)]
+        app = self.wall(client)
+        name = app.evidence.save_frame(time.time(), solid_jpeg(400, 100))
+        app.evidence.save_full(name, 1, solid_jpeg(1920, 1080))
+        app.frames.append(server.Frame(time.time(), b"", name, 5.0))
+        out = app.point(solid_jpeg(400, 100), 300, 50, 400, 100)
+        view = Image.open(BytesIO(app.points[out["id"]]["view"]))
+        self.assertEqual(view.size, (1280, 720))
+
+    def test_the_same_object_is_found_in_the_other_camera_and_the_person_decides(self):
+        client = FakeClient()
+        client.marks = [segment(40, 60)]
+        client.noun = "gate"
+        client.matches = [segment(10, 20), segment(50, 70)]
+        client.picks = {"Gate wide": 2}
+        app = self.wall(client)
+        point_id = app.point(solid_jpeg(400, 100), 300, 50, 400, 100)["id"]
+        app.name_point(point_id)
+        also = app.find_elsewhere(point_id)
+        self.assertEqual(client.compared_views, [("Gate wide", 2)])
+        self.assertEqual([(a["camera"], a["view_box"]["x1"]) for a in also], [("Gate wide", 50)])
+        done = app.confirm_point(point_id, "sliding gate", "It opens to the left.", ["Gate wide"])
+        self.assertEqual(done, {"noun": "sliding gate", "camera": "Gate tracker", "also": ["Gate wide"],
+                                "kinds": {"Gate tracker": "fixed", "Gate wide": "fixed"}})
+        kept = app.pointed_for_rule(point_id)
+        self.assertEqual((kept["named_by"], kept["note"], kept["also"][0]["camera"]), ("person", "It opens to the left.", "Gate wide"))
+        self.assertNotIn("crop", json.dumps(kept))
+        self.assertEqual(app.confirm_point(point_id, "sliding gate", "", [])["also"], [])
+        with self.assertRaises(ValueError):
+            app.confirm_point(point_id, "  ")
+
+    def test_another_thing_with_the_same_name_does_not_count(self):
+        client = FakeClient()
+        client.marks = [segment(40, 60)]
+        client.matches = [segment(10, 20)]
+        client.picks = {"Gate wide": 0}
+        app = self.wall(client)
+        point_id = app.point(solid_jpeg(400, 100), 300, 50, 400, 100)["id"]
+        app.name_point(point_id)
+        self.assertEqual(app.find_elsewhere(point_id), [])
+
+    def test_each_view_keeps_its_kind_and_the_close_ups_go_with_the_rule(self):
+        client = FakeClient()
+        client.marks = [segment(40, 60)]
+        client.matches = [segment(50, 70)]
+        client.picks = {"Gate wide": 1}
+        app = self.wall(client)
+        app.camera_kinds.set("Gate tracker", "moving")
+        point_id = app.point(solid_jpeg(400, 100), 300, 50, 400, 100)["id"]
+        app.name_point(point_id)
+        app.find_elsewhere(point_id)
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder)
+        pointed = app.save_pointed(point_id, folder, app.pointed_for_rule(point_id))
+        self.assertEqual((pointed["kind"], pointed["also"][0]["kind"], pointed["moving"]), ("moving", "fixed", ["Gate tracker"]))
+        self.assertEqual(pointed["reference"], "pointed/clicked.jpg")
+        self.assertTrue((folder / "pointed" / "clicked.jpg").is_file())
+        self.assertTrue((folder / pointed["also"][0]["reference"]).is_file())
+        saved = json.loads((folder / "pointed.json").read_text())
+        self.assertEqual(saved["noun"], "water bottle")
+        self.assertNotIn("box", saved)
+
+    def test_one_camera_has_nowhere_else_to_look(self):
+        client = FakeClient()
+        client.marks = [segment(10, 20)]
+        app = self.app(client)
+        point_id = app.point(solid_jpeg(100, 100), 15, 5, 100, 100)["id"]
+        app.name_point(point_id)
+        self.assertEqual(app.find_elsewhere(point_id), [])
+        self.assertEqual(client.found, [])
+
+
+class Kinds(TempLogs):
+    def test_a_camera_is_still_until_it_is_seen_to_turn_and_the_person_wins(self):
+        path = Path(self.logs) / "cameras.json"
+        kinds = server.CameraKinds(path)
+        self.assertEqual((kinds.kind("Side"), kinds.why("Side")), ("fixed", "Its picture has stayed still so far."))
+        kinds.turned("Side", 1_800_000_000)
+        # One shift can be headlights, so it takes more than one pan.
+        self.assertEqual(kinds.kind("Side"), "fixed")
+        self.assertIn("shifted once", kinds.why("Side"))
+        for minute in range(1, server.TURNS_TO_MOVE):
+            kinds.turned("Side", 1_800_000_000 + 60 * minute)
+        self.assertEqual(kinds.kind("Side"), "moving")
+        self.assertIn("panned", kinds.why("Side"))
+        kinds.set("Side", "fixed")
+        self.assertEqual((kinds.kind("Side"), kinds.why("Side")), ("fixed", "You set this."))
+        again = server.CameraKinds(path)
+        self.assertEqual(again.kind("Side"), "fixed")
+        again.set("Side", "auto")
+        self.assertEqual(again.kind("Side"), "moving")
+        self.assertEqual(again.kind("Gate tracker", can_turn=True), "moving")
+        with self.assertRaises(ValueError):
+            again.set("Side", "sideways")
+
+    def test_the_page_sees_each_camera_with_its_reason(self):
+        app = self.app(FakeClient())
+        app.cameras = ["Driveway", "Gate tracker"]
+        app.camera_kinds.set("Gate tracker", "moving")
+        self.assertEqual([(c["name"], c["kind"], c["by"]) for c in app.status()["camera_kinds"]],
+                         [("Driveway", "fixed", "whenever"), ("Gate tracker", "moving", "person")])
+
+    def test_a_removed_camera_leaves_the_list_and_can_come_back(self):
+        app = self.app(FakeClient())
+        app.cameras = ["Driveway", "Side"]
+        app.camera_kinds.remove("Side")
+        state = app.status()
+        self.assertEqual(state["removed_cameras"], ["Side"])
+        self.assertEqual([(c["name"], c["removed"]) for c in state["camera_kinds"]], [("Driveway", False), ("Side", True)])
+        app.claim("camera-phone", ["Side"])
+        self.assertEqual(app.status()["removed_cameras"], [])
+
+    def test_relayed_cameras_name_their_streams_and_say_they_run(self):
+        app = self.app(FakeClient())
+        app.claim("camera-1", ["Driveway", "Side"], [], (2, 1), ["driveway", "side"])
+        self.assertEqual(app.streams, {"Driveway": "driveway", "Side": "side"})
+        with mock.patch.object(server, "HLS_URL", "http://127.0.0.1:8888"):
+            self.assertEqual(app.status()["streams"], {"Driveway": "driveway", "Side": "side"})
+        self.assertEqual(app.status()["streams"], {})
+        self.assertFalse(app.status()["live_wanted"])
+        self.assertFalse(app.camera_live())
+        self.assertFalse(app.alive("someone-else"))
+        self.assertTrue(app.alive("camera-1"))
+        self.assertTrue(app.camera_live())
+
+    def test_the_page_learns_who_feeds_the_camera(self):
+        app = self.app(FakeClient())
+        self.assertEqual(app.status()["owner"], {"cameras": False, "page": ""})
+        app.claim("page-1")
+        self.assertEqual(app.status()["owner"]["page"], "page-1")
+        app.live_at = time.time()
+        app.claim("page-2")
+        self.assertEqual(app.status()["owner"], {"cameras": True, "page": "page-1"})
+
+    def test_a_rule_can_check_against_the_close_up_in_its_folder(self):
+        client = FakeClient()
+        app = self.app(client)
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder)
+        (folder / "pointed").mkdir()
+        (folder / "pointed" / "clicked.jpg").write_bytes(b"close-up")
+        rule = Replies(folder)
+        name = app.evidence.save_frame(1.0, b"jpeg")
+        app._rule_check(rule, "The same gate is open.", [name], reference="pointed/clicked.jpg")
+        self.assertEqual(client.verified[0][3], b"close-up")
+        app._rule_check(rule, "x", [name], reference="../../.env")
+        self.assertIsNone(client.verified[1][3])
+
+
+class AlertMedia(TempLogs):
+    """An alert shows only the cameras where it happened, with a clip of the moments around it."""
+
+    def setUp(self):
+        super().setUp()
+        self.app_ = self.app(FakeClient())
+        self.app_.wall, self.app_.cameras = (2, 2), ["Gate wide", "Driveway", "Garden"]
+        self.folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.folder)
+        self.rule = server.Rule(self.app_, "r1", "When a car moves", {"name": "Car", "sensors": []}, self.folder)
+        now = time.time()
+        self.names = []
+        for i in range(6):
+            name = self.app_.evidence.save_frame(now - 3 + i * 0.5, solid_jpeg(400, 113))
+            self.app_.evidence.save_sharp(name, solid_jpeg(800, 450, (40 * i, 90, 90)))
+            self.app_.timeline.append(server.Frame(now - 3 + i * 0.5, None, name, 5.0))
+            self.names.append(name)
+        self.rule.last_event = {"t": now - 2, "tile": 1, "frame": self.names[2]}
+
+    def test_only_the_camera_that_fired_is_sent_with_a_clip(self):
+        media = self.app_.alert_media(self.rule)
+        self.assertEqual(media["cameras"], ["Driveway"])
+        self.assertEqual(Image.open(BytesIO(media["picture"])).size, (400, 225))
+        self.assertTrue(media["url"].startswith("/rule-file/r1/pictures/alert-"))
+        if shutil.which("ffmpeg"):
+            self.assertEqual(media["clip"][4:8], b"ftyp")
+            self.assertTrue(media["clip_url"].startswith("/rule-file/r1/clips/"))
+            self.assertIsNotNone(server.rule_clip(self.folder, media["clip_url"].split("/r1/", 1)[1]))
+
+    def test_a_kept_full_frame_gives_the_camera_its_real_pixels(self):
+        self.app_.evidence.save_full(self.names[2], 1, solid_jpeg(1920, 1080))
+        media = self.app_.alert_media(self.rule)
+        self.assertEqual(Image.open(BytesIO(media["picture"])).size, (960, 540))
+
+    def test_two_views_of_a_pointed_thing_sit_side_by_side(self):
+        self.rule.pointed = {"noun": "car", "camera": "Driveway", "also": [{"camera": "Gate wide"}]}
+        media = self.app_.alert_media(self.rule)
+        self.assertEqual(media["cameras"], ["Driveway", "Gate wide"])
+        self.assertEqual(Image.open(BytesIO(media["picture"])).size, (806, 225))
+
+    def test_one_camera_keeps_its_whole_picture(self):
+        self.app_.wall, self.app_.cameras = (1, 1), []
+        media = self.app_.alert_media(self.rule)
+        self.assertEqual(media["cameras"], [])
+        self.assertEqual(Image.open(BytesIO(media["picture"])).size, (800, 450))
+
+    def test_an_old_event_does_not_choose_the_camera(self):
+        self.rule.last_event["t"] -= server.EVENT_FRESH_S + 1
+        self.assertEqual(self.app_.alert_media(self.rule)["cameras"], [])
+
+    def test_a_clip_comes_from_the_buffer_at_full_size(self):
+        if not shutil.which("ffmpeg"):
+            self.skipTest("needs ffmpeg")
+        source = self.folder / "buffer.mp4"
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=15:duration=6",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source)], check=True)
+        asked = []
+
+        class Reply(BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def urlopen(url, timeout=None):
+            asked.append(url)
+            return Reply(source.read_bytes())
+
+        self.app_.streams = {"Driveway": "driveway"}
+        with mock.patch.object(server, "PLAYBACK_URL", "http://127.0.0.1:9996"), \
+                mock.patch.object(server.urllib.request, "urlopen", urlopen):
+            media = self.app_.alert_media(self.rule)
+        self.assertIn("path=driveway", asked[0])
+        self.assertIn("format=mp4", asked[0])
+        probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_name,width", "-of", "csv=p=0", "-"],
+                               input=media["clip"], capture_output=True)
+        self.assertEqual(probe.stdout.decode().strip(), "h264,1280")
+
+    def test_a_clip_path_stays_inside_the_clips_folder(self):
+        (self.folder / "clips").mkdir()
+        (self.folder / "clips" / "a.mp4").write_bytes(b"x")
+        (self.folder / "rule.py").write_text("x")
+        self.assertIsNotNone(server.rule_clip(self.folder, "clips/a.mp4"))
+        self.assertIsNone(server.rule_clip(self.folder, "rule.py"))
+        self.assertIsNone(server.rule_clip(self.folder, "clips/../rule.py"))
 
 
 class Replies:
@@ -1644,6 +1949,7 @@ class Stages(TempLogs):
         app._rule_arm(rule, "s", 60)
         self.assertGreater(app.hold_until, time.time())
         app.frame(b"a", time.time() + 0.1)
+        app.frame(b"a", time.time() + 1.6)
         self.assertEqual(rule.sent[0]["type"], "on")
         self.assertTrue(rule.sent[0]["event"]["frames"])
 
@@ -1795,10 +2101,11 @@ class EventDetail(TempLogs):
         app = self.app(FakeClient(answer=True))
         rule = FakeRule(app, frames_per_check=2)
         app.frame(b"a", 1.0)
+        app.frame(b"b", 2.0)
         detail = rule.sent[0]["event"]
         self.assertEqual(detail["note"], "test")
         self.assertEqual(detail["proof"], detail["frames"][0]["name"])
-        self.assertEqual(detail["frames"][0]["t"], 1.0)
+        self.assertEqual(detail["frames"][0]["t"], 2.0)
 
 
 class FakeVoice:

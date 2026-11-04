@@ -7,6 +7,10 @@
   <title>Whenever</title>
   <link rel="preload" href="/fonts/schibsted-grotesk.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%233346d3'/%3E%3Crect x='5' y='5' width='22' height='22' rx='5' fill='none' stroke='white' stroke-width='2.5'/%3E%3C/svg%3E">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Whenever">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -20,6 +24,7 @@
       <a class="nav-link nav-create" href="#/create" data-nav="create"><span class="icon" data-icon="plus"></span><span>Create</span></a>
       <a class="nav-link" href="#/activity" data-nav="activity"><span class="icon" data-icon="pulse"></span><span>Activity</span><i class="nav-dot" id="activity-dot" hidden></i></a>
       <a class="nav-link" href="#/actions" data-nav="actions"><span class="icon" data-icon="bolt"></span><span>Actions</span></a>
+      <a class="nav-link nav-extra" href="#/cameras" data-nav="cameras"><span class="icon" data-icon="cctv"></span><span>Cameras</span></a>
       <div class="nav-foot">
         <p class="spend"><span id="spend-text">$0.00 of $5 today</span><span class="spend-bar"><i id="spend-fill"></i></span></p>
       </div>
@@ -45,7 +50,7 @@
               <p>Run <code>python3 camera.py</code> on the computer that can reach your cameras. It reads the cameras listed in <code>camera.env</code> and sends them to this page as one wall. The README has the steps.</p>
             </details>
           </div>
-          <p class="fine">Frames go to Meta's API when the picture changes. Each rule's code runs in its own locked folder with no network.</p>
+          <p class="fine">You can change this later on Live, under Cameras. Frames go to Meta's API when the picture changes. Each rule's code runs in its own locked folder with no network.</p>
         </div>
       </section>
 
@@ -54,11 +59,15 @@
         <header class="head">
           <h1>Live</h1>
           <span id="status" class="status">Starting</span>
+          <a class="source-pill" href="#/cameras" aria-label="Cameras: change where the picture comes from"><span class="icon" data-icon="camera"></span><span id="source-name">Cameras</span><span class="icon" data-icon="arrow"></span></a>
         </header>
-        <div class="point-banner" id="point-banner" hidden>
-          <span class="icon" data-icon="hand"></span>
-          <p id="point-text">Tap the thing you mean.</p>
-          <button type="button" class="pill-button small" id="point-done">Back to Create</button>
+        <div class="camera-mode-bar" id="camera-mode-bar" hidden>
+          <div class="camera-mode-top">
+            <span class="camera-mode-live"><i class="live-dot"></i>This phone is the camera</span>
+            <button type="button" class="pill-button small ghost" id="camera-flip"><span class="icon" data-icon="camera"></span>Flip</button>
+            <button type="button" class="pill-button small" id="camera-stop">Stop</button>
+          </div>
+          <p id="camera-mode-note"></p>
         </div>
         <div class="focus" id="focus" hidden></div>
         <div class="frame-wrap" id="frame-wrap">
@@ -76,8 +85,8 @@
         </div>
         <div id="controls" class="controls" hidden></div>
         <div class="live-strip" id="live-strip"></div>
-        <details class="numbers">
-          <summary>Numbers</summary>
+        <details class="numbers" hidden>
+          <summary>For developers</summary>
           <dl class="stats">
             <div><dt>Frame to decision</dt><dd id="s-latency">–</dd></div>
             <div><dt>SAM 3.1</dt><dd id="s-sam">–</dd></div>
@@ -132,7 +141,8 @@
                 <button id="record" type="button" class="aid"><span class="icon" data-icon="record"></span>Show an example</button>
               </div>
               <div id="pointed-box" class="attached" hidden>
-                <span class="icon" data-icon="hand"></span><span>Pointing at <b id="pointed-name"></b></span>
+                <span class="icon" data-icon="hand"></span><span>Pointing at <b id="pointed-name"></b><small id="pointed-where"></small></span>
+                <button id="change-pointed" type="button" class="link-button">Change</button>
                 <button id="clear-pointed" type="button" class="link-button">Remove</button>
               </div>
               <div id="example-box" class="attached" hidden>
@@ -184,6 +194,36 @@
         </div>
       </section>
 
+      <!-- Cameras: where the picture comes from, each camera, and how to connect security cameras. -->
+      <section class="screen" data-screen="cameras" hidden>
+        <a class="back" href="#/live"><span class="icon" data-icon="back"></span>Live</a>
+        <header class="head">
+          <h1>Cameras</h1>
+        </header>
+        <section class="source-now" id="source-now" aria-live="polite">
+          <canvas id="source-preview" aria-hidden="true"></canvas>
+          <div class="source-words">
+            <b id="source-title">No camera yet</b>
+            <p id="source-line"></p>
+            <div id="source-action"></div>
+          </div>
+        </section>
+        <div id="kinds-block" hidden>
+          <h2 class="section-title">Your cameras</h2>
+          <ul class="camera-kinds" id="camera-kinds"></ul>
+          <p class="note">Whenever judges from each picture whether a camera stays still or moves. Your choice wins.</p>
+        </div>
+        <h2 class="section-title">Add a camera</h2>
+        <div class="place-choices" id="source-choices"></div>
+        <div class="device-picker" id="device-picker" hidden></div>
+        <h2 class="section-title">Makes</h2>
+        <ul class="coming-grid" id="coming-grid"></ul>
+        <details class="dev-guide" id="connect-title">
+          <summary>For developers: connect cameras with camera.py</summary>
+          <div id="camera-guide"></div>
+        </details>
+      </section>
+
       <!-- Activity -->
       <section class="screen" data-screen="activity" hidden>
         <header class="head">
@@ -192,19 +232,23 @@
         <div class="segmented" role="tablist" aria-label="View" id="activity-tabs">
           <button type="button" role="tab" aria-selected="true" data-view="feed">Feed</button>
           <button type="button" role="tab" aria-selected="false" data-view="reports">Reports</button>
+          <button type="button" role="tab" aria-selected="false" data-view="problems">Problems <span id="problems-count" class="tab-count" hidden></span></button>
         </div>
         <div data-view-panel="feed">
           <div class="chips filter-chips" id="activity-filter">
             <button type="button" class="chip on" data-kind="all">Everything</button>
             <button type="button" class="chip" data-kind="alerts">Alerts</button>
             <button type="button" class="chip" data-kind="action">Actions</button>
-            <button type="button" class="chip" data-kind="error">Problems</button>
+            <button type="button" class="chip" data-kind="asked">Questions</button>
           </div>
           <p class="guide" id="activity-guide"></p>
           <ol class="feed" id="activity-list"></ol>
         </div>
         <div data-view-panel="reports" hidden>
           <div id="reports"></div>
+        </div>
+        <div data-view-panel="problems" hidden>
+          <div id="problems"></div>
         </div>
       </section>
 
@@ -218,7 +262,7 @@
         <ul id="actions" class="action-list"></ul>
         <form id="action-form" class="connect">
           <h2 class="section-title"><label for="action-words">Connect an action</label></h2>
-          <p class="note">Say what it should do. You can paste docs or an example request. Do not paste a key: keys go in <code>actions.env</code>.</p>
+          <p class="note">Say what it should do. You can paste docs or an example request. Do not paste a password or a key here.</p>
           <textarea id="action-words" rows="3" maxlength="6000" placeholder="Turn my desk lamp on or off. It is Hue light 3 on my home bridge."></textarea>
           <div class="form-row">
             <button id="action-add" type="submit" class="pill-button">Connect it</button>
@@ -231,6 +275,28 @@
   </div>
 
   <div id="flash" class="toast" role="status" hidden></div>
+  <section id="alert-card" class="alert-card" role="alert" hidden></section>
+
+  <!-- Ask: one box for questions about the past or now. Its chips come from the screen it is on. -->
+  <form id="ask-bar" class="ask-bar" role="search" autocomplete="off" hidden>
+    <div class="ask-chips" id="ask-chips" aria-label="What the question is about"></div>
+    <div class="ask-field">
+      <span class="icon" data-icon="search" aria-hidden="true"></span>
+      <label class="sr-only" for="ask-input">Ask about your cameras</label>
+      <input id="ask-input" name="question" maxlength="400" enterkeyhint="search"
+             placeholder="Ask about your cameras, such as: when did the gate last open?">
+      <button type="submit" class="ask-send" aria-label="Ask"><span class="icon" data-icon="arrow-up"></span></button>
+    </div>
+  </form>
+
+  <dialog id="ask-sheet" class="sheet ask-sheet" aria-labelledby="ask-title">
+    <div class="sheet-head">
+      <strong id="ask-title">Ask</strong>
+      <button id="ask-close" type="button" class="icon-button" aria-label="Close"><span class="icon" data-icon="x"></span></button>
+    </div>
+    <div id="ask-body" aria-live="polite"></div>
+  </dialog>
+  <div id="stream-box" class="stream-box" aria-hidden="true"></div>
 
   <dialog id="viewer" class="sheet">
     <div class="sheet-head">
@@ -245,10 +311,28 @@
 
   <dialog id="pair" class="sheet" aria-labelledby="pair-title">
     <div class="sheet-head">
+      <button id="pair-back" type="button" class="icon-button" aria-label="Back to the choices" hidden><span class="icon" data-icon="back"></span></button>
       <strong id="pair-title">Pair your phone</strong>
       <button id="pair-close" type="button" class="icon-button" aria-label="Close"><span class="icon" data-icon="x"></span></button>
     </div>
     <div id="pair-body"></div>
+  </dialog>
+
+  <dialog id="point-sheet" class="sheet" aria-labelledby="point-title">
+    <div class="sheet-head">
+      <strong id="point-title">Point at a thing</strong>
+      <button id="point-close" type="button" class="icon-button" aria-label="Close"><span class="icon" data-icon="x"></span></button>
+    </div>
+    <p class="pair-text" id="point-say">Tap the thing you mean.</p>
+    <div class="point-stage" id="point-stage">
+      <img id="point-image" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="The cameras, as they look now. Tap a thing in the picture.">
+      <canvas id="point-ink" aria-hidden="true"></canvas>
+      <span class="point-tag" id="point-tag" hidden></span>
+    </div>
+    <div class="point-tools">
+      <button id="point-refresh" type="button" class="link-button">Take a new picture</button>
+    </div>
+    <div id="point-result" aria-live="polite"></div>
   </dialog>
 
   <dialog id="evidence" class="sheet">

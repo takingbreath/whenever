@@ -118,9 +118,10 @@ class Blocks(unittest.TestCase):
         self.assertEqual((draw["text"], draw["frame"], draw["target"], draw["check"]),
                          ("a phone", "0000001.jpg", "bag", "c9"))
         self.assertIn({"do": "show", "name": "width", "value": "384"}, seen)
-        self.assertIn({"do": "log", "text": "failed: too many calls"}, seen)
-        self.assertIn({"do": "log", "text": "ended seen"}, seen)
-        self.assertIn({"do": "log", "text": "True 0000001.jpg a sharp view"}, seen)
+        logs = [{k: v for k, v in item.items() if k != "check"} for item in seen if item.get("do") == "log"]
+        self.assertIn({"do": "log", "text": "failed: too many calls"}, logs)
+        self.assertIn({"do": "log", "text": "ended seen"}, logs)
+        self.assertIn({"do": "log", "text": "True 0000001.jpg a sharp view"}, logs)
         self.assertIn("frames/0000001.jpg", [m.get("path") for m in seen])
         self.assertFalse([m for m in seen if m["do"] == "error"])
 
@@ -280,10 +281,11 @@ class TestJobs(unittest.TestCase):
     def test_each_job_keeps_its_own_event_and_can_finish_first(self):
         first, second = self.event("a"), self.event("b")
         self.write({"type": "reply", "id": second["id"], "value": {"answer": "two", "confidence": 1}})
-        self.assertEqual(self.read(), {"do": "log", "text": "b two"})
+        # Each line carries its own job's event, so the page puts it on that event's card.
+        self.assertEqual(self.read(), {"do": "log", "text": "b two", "check": "b"})
         self.assertEqual(self.read()["do"], "done")
         self.write({"type": "reply", "id": first["id"], "value": {"answer": "one", "confidence": 1}})
-        self.assertEqual(self.read(), {"do": "log", "text": "a one"})
+        self.assertEqual(self.read(), {"do": "log", "text": "a one", "check": "a"})
         self.assertEqual(self.read()["do"], "done")
         self.assertEqual(json.loads((self.folder / "data/state.json").read_text()), {"a": "one", "b": "two"})
 
@@ -319,6 +321,17 @@ class TestContext(unittest.TestCase):
         found = self.ctx.check("A clear face", self.ctx.frames(count=2))
         self.assertEqual([c.passed for c in found], [True, False])
         self.assertEqual(self.ctx.asked, [("A clear face", "spark")])
+
+    def test_the_pointed_thing_and_its_close_up_reach_the_code(self):
+        (self.folder / "pointed.json").write_text('{"noun": "gate", "reference": "pointed/clicked.jpg"}')
+        ctx = rule_runtime.Context(folder=self.folder)
+        self.assertEqual(ctx.pointed["noun"], "gate")
+        self.assertIsNone(self.ctx.pointed)
+        sent = []
+        live = rule_runtime.Context(folder=self.folder, call=lambda block, **args: sent.append(args) or [])
+        live.check("The same gate is open.", [rule_runtime.Frame("1.jpg")], reference=ctx.pointed["reference"])
+        live.check("The same gate is open.", [rule_runtime.Frame("1.jpg")], reference=rule_runtime.Frame("2.jpg"))
+        self.assertEqual([a["reference"] for a in sent], ["pointed/clicked.jpg", "2.jpg"])
 
     def test_a_test_can_see_what_was_armed(self):
         self.ctx.arm("face", 60)

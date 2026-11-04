@@ -1,0 +1,67 @@
+# MediaMTX for Whenever: one entry point for every camera's video, kept exactly as the camera sent it.
+# Nothing here decodes video. It relays each camera to the page as HLS, keeps a buffer on disk, and
+# cuts clips from that buffer. It listens only on this computer: Whenever's server checks the login
+# and passes the live view to the page.
+#
+# The buffer lasts 12 hours. To change it, set MTX_PATHDEFAULTS_RECORDDELETEAFTER (such as 30m) here,
+# and WHENEVER_BUFFER_MIN (such as 30) for Whenever's server, so both agree.
+
+logLevel: warn
+logDestinations: [stdout]
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 1024
+
+authMethod: internal
+authInternalUsers:
+  - user: any
+    pass:
+    ips: ['127.0.0.1', '::1']
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+      - action: api
+
+api: true
+apiAddress: 127.0.0.1:9997
+metrics: false
+pprof: false
+
+playback: true
+playbackAddress: 127.0.0.1:9996
+
+rtsp: true
+rtspTransports: [tcp]
+rtspAddress: 127.0.0.1:8554
+rtpAddress: 127.0.0.1:8000
+rtcpAddress: 127.0.0.1:8001
+rtmp: false
+webrtc: false
+srt: false
+moq: false
+
+hls: true
+hlsAddress: 127.0.0.1:8888
+# A muxer runs for each camera even with nobody watching, so the live view starts at once. It only
+# repackages video, so it costs little.
+hlsAlwaysRemux: true
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsAllowOrigins: ['*']
+
+pathDefaults:
+  # The buffer: the last 12 hours of every camera, as the camera sent it, about 2.8 GB an hour for
+  # five cameras. A clip after an alert, a review of earlier frames, and Ask's closer looks at the past
+  # (2 frames a second of any moment, not only the saved frames) all read it.
+  record: true
+  recordPath: ./buffer/%path/%Y-%m-%d_%H-%M-%S-%f_%z
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 1m
+  recordDeleteAfter: 12h
+
+paths:
+  all_others:

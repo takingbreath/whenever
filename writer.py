@@ -67,7 +67,8 @@ THE CAMERA PIPELINE. You choose its timing for each sensor. Every event is diffe
 about how this event behaves in the real world. Do not use a habit or a default.
 
 1. The page captures 640-pixel frames at frames_per_second, up to 12 a second. It sends them while
-   the picture changes and for 2.5 s after, and one frame every 10 s in a still picture.
+   the picture changes and for 2.5 s after, and one frame a minute in a still picture. So anything that
+   happens in a still picture shows up through its movement, within a second.
 2. Every check_every_s, a sensor takes all the frames since its last check. No time is skipped, but
    the model receives only frames_per_check of them, up to 8.
 3. pattern decides which frames, and how an event works:
@@ -116,6 +117,32 @@ Choose these for each sensor:
 - clear_after_s: for a state, longer than a short interruption. For a moment, shorter than the
   shortest gap between two real occurrences.
 - reason: one short line that explains your timing.
+- watch: where this sensor looks, and when a check is paid. A model call costs money, and most checks
+  see a picture that has not changed where the event happens. So a check is paid only when one of the
+  watched places looks different from the last paid check, or after safety_s. Until then the sensor
+  keeps its last answer for free: a state that is on stays on, and a moment gets no. A state that is
+  off still needs two paid yes answers on new frames to start. The places are only in cameras that
+  stay still. A moving camera's picture moves with its lens, so it never makes a check free.
+  - places: each place is one of these. Use the one that says where the event happens.
+    - pointed true, find "": the thing that the person pointed at, in each camera that stays still.
+      Use it when the event is about that thing, such as "the gate opens".
+    - find "a plain noun", pointed false: every such thing in that camera, found once by SAM, such as
+      "table", "door", "counter" or "car". Use it when the event can happen at any of several things,
+      such as "a customer sits at a table". Name the thing, not the person or the event.
+    - find "", pointed false: the camera's whole view. Use it when the event can happen anywhere in it.
+    camera: the camera's name, or "" for every camera that the sensor watches.
+  - wake: "change" for almost every sensor. "count" when the event is only about how many people or
+    common things are in a place, such as "a customer sits at a table" or "a car parks in the drive":
+    the free local detector counts the things in count in each place, and a check is paid only when a
+    number changes. It cannot see what people do, so use "change" for an action. "always" only when the
+    event can happen without any change in the places, or when only moving cameras show it.
+  - count: for wake "count", the things to count, such as ["person"] or ["car", "truck"], from the
+    local detector's kinds (see ctx.detect). [] for the other wakes.
+  - change: how alike a place must stay to count as unchanged, from 0.5 to 0.99. 0.9 is right for most
+    places. Use 0.95 for a small thing, such as a parcel on a step. Use 0.85 for a place where leaves,
+    water or a screen move all the time.
+  - safety_s: a paid check at least this often, from 60 to 3600 seconds. 600 for most rules. Shorter
+    when a missed start costs a lot.
 
 CHOOSE FACTS THAT DEFINE THE EVENT, AND NOTHING ELSE. The person's words say what the main activity
 is. Test each fact alone: if this fact were false, would a person still say that the event happened?
@@ -140,8 +167,12 @@ Write rule.py with any of these functions:
 t is Unix time in seconds. The sensors are already cleaned, so one odd frame does not reach you.
 
 ctx.state is a dict that is saved between calls, and across server restarts. Keep JSON values in it.
-ctx.notify(text, picture=None) shows a notification. It also reaches the person's phone when they
-have a phone action, with the picture if you pass a Frame. ctx.say(text) speaks.
+ctx.notify(text, picture=None, at=None) shows a notification. It also reaches the person's phone when
+they have a phone action, with the picture if you pass a Frame. It shows the cameras and the clip of
+its event. In on_tick there is no event, so pass at, the time of the event that the alert is about,
+such as a time you kept in ctx.state. One event is one message on the phone: a later alert of the same
+event answers the first one when you pass a new picture, and stays on the page when you do not. So send
+a "nothing found" note without a picture, and it does not ring the phone again. ctx.say(text) speaks.
 ctx.show(name, value) shows a live value on the page. Use it for any number a person may want to see.
 ctx.log(text) adds a line to the event list.
 ctx.folder is your folder. Files you write there stay.
@@ -152,8 +183,9 @@ ctx.event is what just fired. It is None in on_tick. It has .sensor, .t, .frames
 sensor saw), .proof (the frame that proved the event), .note (one line on what the sensor saw) and
 .facts. The note is only a sentence for a person, so ask a model if your code needs an answer.
 
-ctx.frames(before=2, after=0, count=8) returns frames around the event, or around now in on_tick,
-in time order. The server keeps the newest 240 frames. after waits up to 30 s for later frames, so
+ctx.frames(before=2, after=0, count=8, at=None) returns frames around the event, or around now in
+on_tick, or around the time at, in time order. In on_tick, pass at for a search that belongs to an
+event, such as at=its deadline, because on_tick can run late after a restart. The server keeps the newest 240 frames. after waits up to 30 s for later frames, so
 use it when what you need comes after the trigger. Each Frame has .t, .motion and .path. The path
 is a JPEG in your folder, so Pillow, OpenCV or any library can open it, measure it or crop it.
 
@@ -170,9 +202,11 @@ against a claim, up to 12 frames at the same time. It returns a list of Checks, 
 with .frame, .passed, .confidence and .seen (what the model really saw there). Use it whenever a
 result depends on what one frame shows: to search for the best frame, and to confirm a frame before
 your code calls it clear or correct. Write the whole standard into the claim, such as "The face of
-the person holding the box is sharp, with the whole head in view and both eyes visible." If other
-people or things may be in view, name which one, and pass reference, a Frame that shows it, such as
-ctx.event.proof. Never call a picture clear, or show it as proof, until a Check on that exact frame
+the person holding the box is sharp, with the whole head in view and both eyes visible." Ask only for
+what that camera can show. A security camera across a yard, or at night, cannot show eyes: ask that the
+whole person is in view, not cut off at the edge and not badly blurred. If other
+people or things may be in view, name which one, and pass reference: a Frame that shows it, such as
+ctx.event.proof, or a picture in your folder, such as ctx.pointed["reference"]. Never call a picture clear, or show it as proof, until a Check on that exact frame
 has passed. If nothing passes, keep waiting or say that you found no good picture.
 
 ctx.gallery(thing, frames=None, count=6, caption="") shows a person a row of zoomed pictures of a thing,
@@ -188,6 +222,83 @@ imply that a zoomed picture proves who someone is.
 ctx.find(thing, frame=None) makes SAM find a short noun phrase in one frame, such as "person" or
 "bag". It returns a list of dicts with x1, y1, x2, y2, w, h and confidence, the most certain first.
 It says where things are and how many. It does not read or describe.
+
+COUNTING AND PLACES, FOR FREE. A local detector runs on the server's CPU. It costs nothing and takes
+about 0.1 s for each camera picture. Use it for how many and where, and a model only for what things
+mean. This is how a rule watches many places at once and still costs little.
+
+ctx.detect(things="person", frames=None, camera=None, places=None, min_confidence=0.35, region=None,
+near=0.5) finds common things in each camera of each frame. Without frames, it uses the event's frames, or the
+newest frame in on_tick. things is a word or a list of the detector's kinds: person, car, truck, bus,
+bicycle, motorcycle, dog, cat, bird, chair, couch, bench, dining table, bed, cup, bottle, wine glass,
+bowl, fork, knife, spoon, laptop, cell phone, tv, book, backpack, handbag, suitcase, umbrella, potted
+plant, and the other COCO kinds. It returns a list of Found, each with .frame, .camera, .label,
+.confidence, .box (x1, y1, x2, y2 from 0 to 1 in that camera's picture), .id, .stayed, .tall and
+.place. .id stays the same while a thing stays about where it was between looks, so you can follow one
+person at one table. .stayed is how many seconds it has been in about that spot: a seated customer or
+a parked car stays, and a passer-by or a waiter who walks past does not. .tall is the box's height over
+its width: a person who stands is about 2.5 or more, and one who sits is about 2 or less. places, a
+list of Place, sets each .place: the place that holds the thing's seat point (three quarters down its
+box), or the nearest place less than near times that place's size away, so a person on a chair beside
+a table counts at that table. region, a box from 0 to 1, looks only there with more pixels, for small
+things far away. Call ctx.detect in time order with frames a few seconds apart or less, so that .id
+and .stayed can follow each thing. It can miss a thing that is mostly hidden, and it cannot say what
+a person does or who they are. For any other kind of thing, use ctx.find.
+
+ctx.places(thing, camera=None) returns every such thing in the cameras that stay still, such as
+"table", "door", "desk" or "parking space", each a Place with .name ("table 1", "table 2", numbered by
+rows from the top left), .camera and .box. SAM finds them once in each camera, and your folder keeps
+them, so later calls are free.
+
+rule_runtime also gives these functions for boxes: center(box), seat(box) (three quarters down it),
+foot(box) (the middle of its bottom edge, where a standing person or a car touches the ground),
+inside(point, place), overlap(a, b), share_inside(box, place), and place_of(thing, places,
+point=center, near=0.0), the name of the place that holds the thing's point, or the nearest one less
+than near times its size away, or None. Import them, such as: from rule_runtime import place_of, foot
+
+ctx.steady(key, value, looks=3) returns value once it was the same in looks calls in a row with this
+key, or else the last steady value, None at first. A count from one picture can flicker when people
+pass each other, so act on a steady count.
+
+ctx.since(key, true, t=None) returns how many seconds a condition has been true without a break, such
+as a table that is taken and not yet served, and 0 when it is false. ctx.state keeps each start.
+
+ctx.check(claim, frames, place=...) with a Place or a Found shows the model only a close-up of that
+place, cut at full size from its camera. Use it to ask about one table, one door or one person, so
+that other things in view cannot change the answer.
+
+The cheap pattern for many places, such as tables, desks, beds, parking spaces or shelves: in on_tick,
+every few seconds, count with ctx.detect on the newest frame, and keep a steady count and a timer for
+each place. Call a model only when a count or a timer says that a place may need attention, and then
+only about that place, with ctx.check and place. Record each number with ctx.record. For example:
+
+    from rule_runtime import ModelError
+
+    def on_tick(t, ctx):
+        if t - ctx.state.get("looked", 0) < 5:
+            return
+        ctx.state["looked"] = t
+        tables = ctx.places("table")
+        frames = ctx.frames(count=1)
+        people = ctx.detect("person", frames, places=tables)
+        for table in tables:
+            # A customer stays and sits. A waiter walks past or stands.
+            seated = ctx.steady(table.name, sum(1 for p in people if p.place == table.name
+                                                and p.stayed >= 4 and p.tall < 2.3))
+            waiting = ctx.since(table.name, bool(seated))
+            ctx.show(table.name, f"{seated or 0} seated" + (f", {int(waiting // 60)} min" if seated else ""))
+            asked = ctx.state.setdefault("asked", {})
+            if waiting > 300 and not asked.get(table.name):
+                asked[table.name] = t
+                try:
+                    best = ctx.check("Nothing to eat or drink is on this table.", frames, place=table)[0]
+                except ModelError:
+                    continue
+                if best.passed:
+                    ctx.notify(f"{table.name} has waited {int(waiting // 60)} minutes with nothing served",
+                               picture=best.frame, at=t)
+            if not seated:
+                asked.pop(table.name, None)
 
 CAMERAS. With several cameras, each frame is a wall with one labeled tile for each camera. If the
 request names a place, say that tile's label in the sensor's question. The request lists the cameras
@@ -275,7 +386,10 @@ ctx.frames(after=...) is not a wait. Ask: can this still happen later? If it can
 sensor with starts_off true for that later moment, and arm it from on_event. Finish the job when it
 fires, then disarm it. In on_tick, check a deadline that you keep in ctx.state. Use a deadline of
 minutes, unless the person said otherwise. If time runs out, report what you could not do. Tell the
-person in the event list what the rule now waits for. A rule can have several stages. For example:
+person in the event list what the rule now waits for. Jobs run at the same time while they wait for a
+model, so an on_tick retry can start while on_event's own search for the same job still runs. Mark the
+job busy in ctx.state for the length of a search, and let on_tick skip a busy job, even past its
+deadline. A rule can have several stages. For example:
 
     def on_event(sensor, t, ctx):
         if sensor == "parcel_left":
@@ -299,9 +413,9 @@ person in the event list what the rule now waits for. A rule can have several st
 
     def on_tick(t, ctx):
         if t > ctx.state.get("deadline", t):
-            ctx.state.pop("deadline")
+            deadline = ctx.state.pop("deadline")
             ctx.disarm("label_readable")
-            ctx.notify("I never saw the label clearly")
+            ctx.notify("I never saw the label clearly", at=deadline - 300)
 
 An armed sensor must test the exact thing that you wait for, not something near it. A state sensor
 fires once when it turns on, and not again while it stays on. If it tests for a person and the face
@@ -313,11 +427,13 @@ a score alone choose a frame. To search, use ctx.check.
 
 Test with rule_runtime.py, which is already in your folder. A test has no models, so script them:
     import rule
-    from rule_runtime import Context, replay
+    from rule_runtime import Context, Found, Place, replay
     ctx = Context()
     ctx.answers = [("a red book", 0.4), ("a red book", 0.95)]   # what ask returns, in order
     ctx.found = [{"x1": 1, "y1": 1, "x2": 9, "y2": 9, "w": 64, "h": 36, "confidence": 0.9}]
     ctx.checks = [(False, 0.9), (True, 0.85)]   # what check says for each frame, in order
+    ctx.place_list = [Place("table 1", "Hall", (0.2, 0.3, 0.4, 0.5))]   # what places returns
+    ctx.detected = [Found(camera="Hall", label="person", box=(0.25, 0.3, 0.3, 0.45))]   # what detect returns
     ctx = replay(rule, [("on", "drinking", 100.0), ("off", "drinking", 103.0), ("tick", 104.0)], ctx)
     # ctx.actions is a list of dicts, such as {"do": "notify", "text": "..."}
     # ctx.asked is a list of (question, model). ctx.armed holds each armed sensor.
@@ -391,7 +507,7 @@ TOOLS = [
                     "required": ["id", "target", "outline", "starts_off", "question", "requires",
                                  "min_count", "pattern",
                                  "shortest_event_s", "frames_per_second", "check_every_s",
-                                 "frames_per_check", "clear_after_s", "min_motion", "reason"],
+                                 "frames_per_check", "clear_after_s", "min_motion", "reason", "watch"],
                     "properties": {
                         "id": {"type": "string"}, "target": {"type": "string"},
                         "outline": {"type": "string"}, "starts_off": {"type": "boolean"},
@@ -405,6 +521,22 @@ TOOLS = [
                         "clear_after_s": {"type": "number"},
                         "min_motion": {"type": "number"},
                         "reason": {"type": "string"},
+                        "watch": {
+                            "type": "object", "additionalProperties": False,
+                            "required": ["places", "wake", "change", "safety_s", "count"],
+                            "properties": {
+                                "places": {"type": "array", "items": {
+                                    "type": "object", "additionalProperties": False,
+                                    "required": ["camera", "find", "pointed"],
+                                    "properties": {"camera": {"type": "string"}, "find": {"type": "string"},
+                                                   "pointed": {"type": "boolean"}},
+                                }},
+                                "wake": {"type": "string", "enum": ["change", "count", "always"]},
+                                "change": {"type": "number"},
+                                "safety_s": {"type": "number"},
+                                "count": {"type": "array", "items": {"type": "string"}},
+                            },
+                        },
                     },
                 }},
                 "plan": {
@@ -512,7 +644,8 @@ def review_rule(client, sentence, sensors, code):
             "6. UNCHECKED CLAIM: the code calls a picture clear or correct, or shows it as proof, with no "
             "passed ctx.check on that exact frame. A ctx.ask over several frames confirms nothing about "
             "one frame, and a sensor firing does not confirm it either. A claim for a clear picture of a "
-            "person must also ask for the whole head in view, nothing cut off, and both eyes open.\n"
+            "person must ask for the person in view, nothing cut off, and not badly blurred. It asks for eyes or a "
+            "face only for a camera close to people, such as a desk or a door camera.\n"
             "10. NO PICTURES: the person asked for a picture of someone or something, but the code does "
             "not call ctx.gallery, or it shows nothing when the wait ends with no passed check.\n"
             "7. WRONG SUBJECT: the person asked about one person or thing, but a check can pass on another "
@@ -689,15 +822,59 @@ def handle(call, folder, client, example, idle, progress, motions=None, sentence
 
 
 def describe_pointed(pointed):
-    """Tells Wonder about the object that a person clicked in the camera view."""
-    box = pointed["box"]
-    grid = [box["x1"] * 1000 // box["w"], box["y1"] * 1000 // box["h"],
-            box["x2"] * 1000 // box["w"], box["y2"] * 1000 // box["h"]]
-    return (
-        f"\nThe person clicked one object in the camera view: {pointed['noun']}. Its box on a 0-1000 "
-        f"grid is {grid}, as [x_min, y_min, x_max, y_max]. Words such as this, that or it in the "
-        "request mean this object. Use its name in your sensors, and in the outline field. If it "
-        "stays in one place, a question can say where it is in the frame."
+    """Tells Wonder about the object that a person clicked, every camera that shows it, and which of
+    those cameras move. A place in a moving camera's picture is true only for one moment."""
+    def on_grid(box):
+        return [box["x1"] * 1000 // box["w"], box["y1"] * 1000 // box["h"],
+                box["x2"] * 1000 // box["w"], box["y2"] * 1000 // box["h"]]
+
+    def where(camera, kind, box):
+        if kind == "moving":
+            return (f"{camera} moves, so the {noun} can sit anywhere in its picture, or be out of view. "
+                    f"Find it there by its name and its look, not by its place.")
+        if box:
+            return f"{camera} stays still, so the {noun} stays in its place there: box {on_grid(box)} on that camera's 0-1000 grid."
+        return f"{camera} shows it."
+
+    noun = pointed["noun"]
+    named = (" The person gave it this name, so trust the name over what a picture seems to show."
+             if pointed.get("named_by") == "person" else "")
+    text = f"\nThe person clicked one object: {noun}.{named}"
+    if pointed.get("note"):
+        text += f" The person says about it: {pointed['note']}"
+    camera = pointed.get("camera")
+    also = pointed.get("also") or []
+    # Rules written before cameras had kinds name the moving ones in a list.
+    kind_of = {name: "moving" for name in pointed.get("moving") or []}
+    if camera:
+        text += f"\nThey clicked it in {camera}. " + where(camera, pointed.get("kind") or kind_of.get(camera, "fixed"),
+                                                           pointed.get("view_box"))
+        for item in also:
+            text += f"\nThe same {noun} is also in view of {item['camera']}. " + where(
+                item["camera"], item.get("kind") or kind_of.get(item["camera"], "fixed"), item.get("view_box"))
+        if also:
+            views = " or ".join([camera, *[a["camera"] for a in also]])
+            text += (f"\nIt is one object, seen from different sides. Watch it in every one of these views, so the "
+                     f"rule still works when one view is blocked or turned away. A question can name them, such as "
+                     f"\"In {views}, ...\".")
+        else:
+            text += f"\nNo other camera showed the same {noun} when the person clicked."
+        kinds = [pointed.get("kind") or kind_of.get(camera), *[a.get("kind") or kind_of.get(a["camera"]) for a in also]]
+        if "moving" in kinds:
+            text += ("\nA moving view that does not show it says nothing about it: count that view as cannot see, not "
+                     "as no. Judge whether the thing itself moves in a view that stays still. In a moving view, it "
+                     "moved only if its place changed against things that never move, such as posts or walls.")
+            if "fixed" not in kinds:
+                text += " No view that stays still shows it, so say so in the rule's plan."
+    else:
+        text += f"\nIts box on the whole view's 0-1000 grid is {on_grid(pointed['box'])}."
+    if pointed.get("reference"):
+        text += (f"\nA close-up of it from the click is {pointed['reference']} in your folder. ctx.pointed holds all "
+                 f"of this. When other {noun}s may be in view, pass that picture as reference to ctx.check, and "
+                 "name this one in the claim.")
+    return text + (
+        "\nWords such as this, that or it in the request mean this object. Use its name in your sensors, "
+        "and in the outline field. Do not describe it only by where it sits in the frame."
     )
 
 

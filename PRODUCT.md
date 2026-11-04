@@ -24,7 +24,8 @@ The trigger is a camera and plain words, not a fixed list of events. Meta's Muse
 ## Operating Context
 
 - Cameras: the browser camera, or real security cameras read by `camera.py` (EZVIZ cloud, RTP, RTSP). A pan-tilt lens and a light can be controlled.
-- Alerts reach the phone through ntfy, with a picture.
+- Alerts reach every place that the person paired, with a picture: browser alerts (Web Push), Telegram, email (Amazon SES) or the ntfy app.
+- Problems stay quiet: a missed check is a note, and only trouble that needs the person makes a message. Activity > Problems keeps all of it.
 - A journal records every event, action and fact across all rules and restarts. Reports are scheduled rules that read it.
 - Hosted demo: https://wheneverwhatever.si (pending DNS) and https://whenever.140-245-12-216.sslip.io, behind an access code, with a $5 daily model budget.
 - Built for the Meta Global AI Developer Hackathon (startup track). The demo is a 3-minute video in the style of an Instagram Reel.

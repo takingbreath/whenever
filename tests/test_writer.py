@@ -13,7 +13,7 @@ class FakeClient:
         self.facts = facts
         self.note = note
 
-    def check_facts(self, question, facts, frames, moment=False):
+    def check_facts(self, question, facts, frames, moment=False, view=None):
         return {"seen": all(self.facts), "facts": self.facts, "note": self.note}, 0.0
 
 

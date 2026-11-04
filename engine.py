@@ -35,8 +35,11 @@ class SensorState:
     def observe(self, t, hit, strong=False, hold=False):
         """Feed one result. Returns "on", "off", "moment" or None.
 
-        A strong hit is enough alone, because a short event can last for one frame.
-        hold keeps a state on, because a running review may still prove that it goes on.
+        A strong hit starts a moment alone, because a moment can last for one frame. A state
+        lasts, so it needs two checks in a row on new frames: the same frames asked twice repeat
+        the same mistake, such as headlights that make a closed gate look open.
+        hold keeps a state on, because a running review may still prove that it goes on. It
+        holds for one more clear time at most, so a slow review cannot keep a state on.
         """
         # A late result can arrive after a newer one.
         if self.last_t is not None and t <= self.last_t:
@@ -49,14 +52,15 @@ class SensorState:
 
         if not hit:
             self.streak = 0
-            if self.on and cleared and not hold:
+            held = hold and t - self.last_hit < 2 * self.clear_after_s
+            if self.on and cleared and not held:
                 self.on = False
                 return "off"
             return None
 
         self.streak += 1
         self.last_hit = t
-        ready = strong or self.streak >= HITS_TO_SET
+        ready = (strong and self.pattern == "moment") or self.streak >= HITS_TO_SET
 
         if self.pattern == "moment":
             if ready and not self.in_moment:

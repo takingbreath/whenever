@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -160,11 +161,128 @@ class Frames(unittest.TestCase):
         self.assertEqual(camera.change_level(bytes(before), bytes(before)), 0.0)
 
 
+class Turning(unittest.TestCase):
+    """No camera says whether its lens turns, so the picture itself shows it."""
+
+    def scene(self, left):
+        from PIL import ImageFilter
+        texture = Image.effect_noise((200, 120), 60).filter(ImageFilter.GaussianBlur(1.5))
+        return texture, texture.crop((left, 20, left + 128, 92)).resize(camera.SMALL_SIZE).tobytes()
+
+    def test_a_pan_moves_the_whole_picture_and_a_person_does_not(self):
+        texture = Image.effect_noise((200, 120), 60)
+        def view(left):
+            return texture.crop((left, 20, left + 128, 92)).resize(camera.SMALL_SIZE).tobytes()
+        still = view(20)
+        self.assertIsNotNone(camera.whole_shift(still, view(26)))
+        person = Image.frombytes("L", camera.SMALL_SIZE, still)
+        person.paste(255, (10, 8, 22, 30))
+        self.assertIsNone(camera.whole_shift(still, person.tobytes()))
+        self.assertIsNone(camera.whole_shift(still, bytes(min(255, v + 40) for v in still)))
+        self.assertIsNone(camera.whole_shift(still, still))
+        self.assertIsNone(camera.whole_shift(None, still))
+
+    def test_a_turning_lens_makes_no_motion(self):
+        reader = camera.Camera("rtsp://x", "Gate tracker", threading.Event())
+        texture = Image.effect_noise((400, 240), 60)
+        def jpeg(left):
+            out = BytesIO()
+            texture.crop((left, 40, left + 256, 184)).save(out, "JPEG", quality=95)
+            return out.getvalue()
+        reader.frame(jpeg(40))
+        reader.shift_at = float("-inf")
+        reader.frame(jpeg(52))
+        self.assertTrue(reader.turning(camera.time.monotonic()))
+        self.assertEqual(reader.take_motion(), 0.0)
+
+
+    def test_a_grey_frame_from_a_decoder_start_is_dropped(self):
+        reader = camera.Camera("rtsp://x", "Gate wide", threading.Event())
+        scene, grey = BytesIO(), BytesIO()
+        Image.effect_noise((256, 144), 60).convert("RGB").save(scene, "JPEG", quality=90)
+        Image.new("RGB", (256, 144), (128, 128, 128)).save(grey, "JPEG")
+        reader.frame(scene.getvalue())
+        reader.frame(grey.getvalue())
+        self.assertEqual((reader.seq, reader.jpeg), (1, scene.getvalue()))
+        self.assertEqual(reader.take_motion(), 0.0)
+        # A picture that stays grey is real, so it is kept in the end, and every frame after it too.
+        for _ in range(camera.BROKEN_LIMIT + 1):
+            reader.frame(grey.getvalue())
+        self.assertEqual(reader.jpeg, grey.getvalue())
+        seq = reader.seq
+        for _ in range(5):
+            reader.frame(grey.getvalue())
+        self.assertEqual(reader.seq, seq + 5)
+
+    def test_a_mostly_grey_broken_frame_is_dropped_too(self):
+        reader = camera.Camera("rtsp://x", "Gate wide", threading.Event())
+        scene, broken = BytesIO(), BytesIO()
+        Image.effect_noise((256, 144), 60).convert("RGB").save(scene, "JPEG", quality=90)
+        # About 85% flat grey with some garbage, like the frame at 07:06:18.
+        picture = Image.new("RGB", (256, 144), (128, 128, 128))
+        picture.paste(Image.effect_noise((100, 40), 80).convert("RGB"), (60, 50))
+        picture.save(broken, "JPEG")
+        reader.frame(scene.getvalue())
+        reader.frame(broken.getvalue())
+        self.assertEqual(reader.seq, 1)
+
+
+class Clock(unittest.TestCase):
+    """A decoder that is slower than the camera falls behind the live video, and its frames say so."""
+
+    def test_progress_lines_are_read_and_others_are_errors(self):
+        clock = camera.VideoClock()
+        self.assertTrue(clock.progress("out_time_us=2500000\n"))
+        self.assertTrue(clock.progress("progress=continue\n"))
+        self.assertTrue(clock.progress("stream_0_0_q=3.0\n"))
+        self.assertFalse(clock.progress("[hevc @ 0x1] Could not find ref with POC 9\n"))
+        self.assertEqual(clock.video_s, 2.5)
+
+    def test_a_decoder_that_keeps_up_is_not_behind(self):
+        clock = camera.VideoClock()
+        clock.progress("out_time_us=0\n")
+        self.assertEqual(clock.taken(100.0), 100.0)  # still waiting for its first keyframe
+        clock.progress("out_time_us=125000\n")
+        self.assertEqual(clock.taken(104.0), 104.0)
+        clock.progress("out_time_us=10125000\n")
+        self.assertAlmostEqual(clock.behind(114.0), 0.0)
+
+    def test_a_slow_decoder_falls_behind(self):
+        clock = camera.VideoClock()
+        clock.progress("out_time_us=125000\n")
+        clock.taken(100.0)
+        clock.progress("out_time_us=9125000\n")  # 9 s of video in 15 s
+        self.assertAlmostEqual(clock.taken(115.0), 109.0)
+        self.assertAlmostEqual(clock.behind(115.0), 6.0)
+        self.assertGreater(clock.behind(115.0), camera.BEHIND_LIMIT_S)
+
+    def test_a_frame_says_when_it_was_taken(self):
+        reader = camera.Camera("rtsp://x", "Gate wide", threading.Event())
+        scene = BytesIO()
+        Image.effect_noise((256, 144), 60).convert("RGB").save(scene, "JPEG", quality=90)
+        reader.frame(scene.getvalue(), 1234.5)
+        self.assertEqual(reader.taken, 1234.5)
+
+    def test_a_moment_is_stamped_when_its_busy_cameras_took_it(self):
+        sender = types.SimpleNamespace(last_t=0.0)
+        sender.frame_time = lambda active, full: camera.Sender.frame_time(sender, active, full)
+        late, fresh = types.SimpleNamespace(taken=0.0), types.SimpleNamespace(taken=0.0)
+        now = camera.time.time()
+        late.taken, fresh.taken = now - 3.0, now - 0.5
+        self.assertAlmostEqual(sender.frame_time([late, fresh], [(0, b""), (1, b"")]), now - 3.0, delta=0.05)
+        # Never more than the decoder's limit behind, and never before the moment sent last.
+        late.taken = now - 60
+        self.assertGreaterEqual(sender.frame_time([late], [(0, b"")]), now - camera.BEHIND_LIMIT_S - 1.1)
+        self.assertGreater(sender.frame_time([late], [(0, b"")]), sender.last_t - 0.01)
+        # With no busy camera, the moment is now.
+        self.assertAlmostEqual(sender.frame_time([late], []), camera.time.time(), delta=0.05)
+
+
 class Sending(unittest.TestCase):
-    def test_a_still_picture_sends_one_frame_every_10_seconds(self):
+    def test_a_still_picture_sends_one_frame_a_minute(self):
         gate = camera.Gate()
-        sent = [t for t in range(0, 30) if gate.decide(float(t), 0.0) is not None]
-        self.assertEqual(sent, [0, 10, 20])
+        sent = [t for t in range(0, 150) if gate.decide(float(t), 0.0) is not None]
+        self.assertEqual(sent, [0, 60, 120])
 
     def test_a_change_sends_at_the_capture_rate_and_then_settles(self):
         gate = camera.Gate()

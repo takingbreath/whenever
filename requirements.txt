@@ -1,3 +1,7 @@
 meta_sam_parser==0.1.0
 websockets
 Pillow
+cryptography>=41
+# Ask ranks saved moments for free with Meta's Perception Encoder, run as ONNX on the CPU.
+onnxruntime
+numpy

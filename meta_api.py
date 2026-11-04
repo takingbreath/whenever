@@ -29,6 +29,8 @@ WRITER = "muse-wonder-1.0"
 
 # A live check that takes this long is no use. One Spark call took 26 s in our tests.
 CHECK_TIMEOUT_S = 8
+# Spark's slowest tenth took 6 s or more on a slow day, so 8 s missed many checks that were fine.
+LIVE_SPARK_TIMEOUT_S = 12
 RETRY_STATUS = (429, 500, 502, 503)
 RETRY_DELAYS_S = (2, 5, 10)
 
@@ -240,18 +242,41 @@ class Client:
             token = f"<|box;x1={box['x1']};y1={box['y1']};x2={box['x2']};y2={box['y2']};{size}|>"
         return self._segment(f"<0f>1{token}", jpeg)
 
-    def name_object(self, jpeg, box):
-        """Muse Spark: a short general name for the object in a box."""
+    def name_object(self, jpeg, box, crop=None):
+        """Muse Spark: a short general name for the object in a box. crop is a close view of it."""
         grid = [box["x1"] * 1000 // box["w"], box["y1"] * 1000 // box["h"],
                 box["x2"] * 1000 // box["w"], box["y2"] * 1000 // box["h"]]
+        close = " Picture 2 is a close crop of the same object, so use it to see what it is." if crop else ""
         answer, cost = self.ask_text(
-            f"A person clicked one object in this camera frame. It fills this box on a 0-1000 grid, "
-            f"as [x_min, y_min, x_max, y_max]: {grid}. Name that object in 1 to 3 words, as a plain "
-            "noun phrase, such as water bottle or door. Do not name a colour or a brand. "
+            f"A person clicked one object in this camera's picture. It fills this box on a 0-1000 grid, "
+            f"as [x_min, y_min, x_max, y_max]: {grid}.{close} Name that object in 1 to 3 words, as a "
+            "plain noun phrase, such as gate, parked car or water bottle. Do not name a colour or a brand. "
             "Reply with only the name.",
-            [jpeg],
+            [jpeg, crop] if crop else [jpeg], max_tokens=1500,
         )
         return answer.strip().strip('."').lower()[:40], cost
+
+    def same_object(self, noun, reference, camera, views):
+        """Muse Spark: which numbered box in each other camera shows the same physical object.
+
+        views is [(camera name, picture with numbered boxes, box count)]. Returns ({name: number}, cost).
+        """
+        lines = "\n".join(f"Picture {i + 2}: {name}, with boxes 1 to {count}"
+                          for i, (name, _, count) in enumerate(views))
+        answer, cost = self.ask_text(
+            f"Picture 1 is a close view of a {noun} that a person clicked in the camera {camera}. The other "
+            f"pictures come from other cameras at the same place:\n{lines}\nIn each one, numbered boxes mark "
+            f"things that may be a {noun}. For each camera, give the number of the box that shows the same "
+            f"physical {noun} as picture 1, seen from another angle. Give 0 if no box shows it. Another "
+            f"{noun} that only looks alike is 0. Reply with only JSON, such as {{\"{views[0][0]}\": 2}}.",
+            [reference, *[picture for _, picture, _ in views]], max_tokens=2000,
+        )
+        start, end = answer.find("{"), answer.rfind("}")
+        try:
+            picks = json.loads(answer[start:end + 1]) if start >= 0 else {}
+        except ValueError:
+            picks = {}
+        return {str(k): int(v) for k, v in picks.items() if str(v).isdigit()}, cost
 
     def look(self, question, frames, model="spark"):
         """A model looks at frames and answers in words, for a rule's code.
@@ -422,7 +447,7 @@ class Client:
         answer, cost = self.ask_text(prompt + " Answer with one word: yes or no.", frames)
         return answer.lower().startswith("yes"), cost
 
-    def check_facts(self, question, facts, frames, moment=False):
+    def check_facts(self, question, facts, frames, moment=False, view=None):
         """Muse Spark: are all the required facts visible together in one frame?
 
         We ask for each fact, not for one yes or no. A question such as "is this person
@@ -434,6 +459,8 @@ class Client:
             f"These are {count} frames from a live camera, in time order. Frame 1 is the oldest."
             if count > 1 else "This is one frame from a live camera."
         )
+        if view:
+            scene += " " + view
         listed = "\n".join(f"{i + 1}. {fact}" for i, fact in enumerate(facts))
         if moment:
             how = (
@@ -476,7 +503,7 @@ class Client:
                     *[_image_part(jpeg) for jpeg in frames],
                 ],
             }],
-        }, lane="live")
+        }, timeout=LIVE_SPARK_TIMEOUT_S, lane="live")
         data = json.loads(raw)
         cost = spark_cost(data.get("usage") or {})
         try:
@@ -615,11 +642,43 @@ class Client:
             "confidence": min(max(float(answer["confidence"]), 0.0), 1.0),
         }, cost
 
-    def ask_text(self, prompt, frames):
-        """Muse Spark: free text about frames. Returns the text and the cost in USD."""
+    def structured(self, prompt, schema, frames=(), name="answer", model="spark", max_tokens=1200, timeout=None,
+                   lane="analysis"):
+        """A model answers in JSON that fits schema, about text and any frames. Returns (dict, cost).
+
+        Ask uses this to plan a question, to judge a batch of moments, and to word the answer. A live check
+        uses the live lane, so a long question never holds it up."""
+        raw = self._post({
+            "model": WRITER if model == "wonder" else SPARK,
+            "max_output_tokens": max_tokens,
+            "reasoning": {"effort": "low" if model == "wonder" else "minimal"},
+            "text": {"format": {"type": "json_schema", "name": name, "strict": True, "schema": schema}},
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}, *[_image_part(jpeg) for jpeg in frames]],
+            }],
+        }, timeout=timeout or LOOK_TIMEOUT_S[model], retries=1, lane=lane)
+        data = json.loads(raw)
+        usage = data.get("usage") or {}
+        cost = wonder_cost(usage) if model == "wonder" else spark_cost(usage)
+        try:
+            return json.loads(_output_text(data)), cost
+        except ValueError:
+            # A reply cut off by its token budget is not JSON. Once more, with twice the room.
+            if max_tokens >= 6000:
+                raise ApiError("The model's answer was cut off.") from None
+            again, more = self.structured(prompt, schema, frames, name, model, max_tokens * 2, timeout, lane)
+            return again, cost + more
+
+    def ask_text(self, prompt, frames, max_tokens=400):
+        """Muse Spark: free text about frames. Returns the text and the cost in USD.
+
+        Spark can spend its whole budget on reasoning, so a short answer about a picture needs room.
+        """
         raw = self._post({
             "model": SPARK,
-            "max_output_tokens": 400,
+            "max_output_tokens": max_tokens,
             "reasoning": {"effort": "minimal"},
             "input": [{
                 "type": "message",

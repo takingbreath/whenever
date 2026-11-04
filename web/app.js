@@ -6,7 +6,7 @@ const TICK_MS = 80;
 const CELL = 8;              // compare blocks, so a small change in one place still counts
 const CHANGE_LEVEL = 5;      // mean grey difference (0-255) in a block that counts as a change
 const SETTLE_MS = 2500;      // keep checking this long after the last change
-const IDLE_CHECK_MS = 10000; // check a still picture at this slow rate
+const IDLE_CHECK_MS = 60000; // check a still picture once a minute: movement sends frames at once
 const MAX_IN_FLIGHT = 4;
 const HISTORY_LENGTH = 24;
 const POLL_MS = 400;
@@ -24,7 +24,9 @@ const OUTLINE_COLOR = "#ffffff";
 const HUES = ["indigo", "jade", "peacock", "plum", "marigold"];
 
 const params = new URLSearchParams(location.search);
-const pageId = crypto.randomUUID();
+// A phone in camera mode renames itself camera-..., so the server lets it keep the camera while it sends.
+let pageId = crypto.randomUUID();
+let cameraMode = false;
 const $ = (id) => document.getElementById(id);
 
 const video = $("video");
@@ -121,7 +123,14 @@ const ICONS = {
   note: '<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  "arrow-up": '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>',
+  sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/>',
   chart: '<path d="M4 20V11M10 20V5M16 20v-7M21 20H3"/>',
+  send: '<path d="M21 3L3 10.5l7.2 3.3L13.5 21 21 3z"/><path d="M10.2 13.8L21 3"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M4 7.5l8 5.5 8-5.5"/>',
+  external: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>',
+  share: '<path d="M12 3v12M8 7l4-4 4 4"/><path d="M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/>',
 };
 
 function iconUrl(name) {
@@ -218,20 +227,188 @@ function showNotice(html) {
   notice.hidden = !html;
 }
 
-function flash(text) {
+// A short message. With href, it also links to the place that explains it.
+function flash(text, href, linkText = "See why") {
   const el = $("flash");
-  el.textContent = text;
+  el.replaceChildren(element("span", null, text));
+  if (href) {
+    const link = element("a", "toast-link", linkText);
+    link.href = href;
+    link.addEventListener("click", () => { el.hidden = true; });
+    el.append(link);
+  }
   el.hidden = false;
   el.style.animation = "none";
   void el.offsetWidth;
   el.style.animation = "";
   clearTimeout(flashTimer);
-  flashTimer = setTimeout(() => { el.hidden = true; }, 3600);
+  flashTimer = setTimeout(() => { el.hidden = true; }, href ? 7000 : 3600);
 }
 
 // Errors from the camera engine reach the person as a short message.
 function log(text) {
   if (text) flash(text);
+}
+
+/* ---------- Problems ---------- */
+
+// Most trouble passes by itself: a missed check is followed by the next one. Only a problem that needs
+// the person makes a message, once. Activity > Problems keeps everything, with the technical detail.
+let problemSeen = null;
+let problemsData = null;
+let problemsAt = 0;
+let problemFilter = "all";
+const LEVEL_WORD = { error: "Needs you", warn: "Warning", note: "Note" };
+
+function openProblems(rule) {
+  return (state?.problems || []).filter((g) => !rule || g.rule_id === rule.id);
+}
+
+function problemSignals() {
+  const open = openProblems();
+  const newest = Math.max(0, ...open.map((g) => g.id));
+  if (problemSeen === null) problemSeen = newest;
+  const fresh = open.filter((g) => g.id > problemSeen && g.level === "error");
+  if (fresh.length) flash(fresh[fresh.length - 1].title, "#/activity/problems");
+  problemSeen = Math.max(problemSeen, newest);
+  const count = $("problems-count");
+  count.textContent = open.length ? String(open.length) : "";
+  count.hidden = !open.length;
+}
+
+async function loadProblems(force) {
+  if (!force && Date.now() - problemsAt < JOURNAL_MS) return;
+  problemsAt = Date.now();
+  try {
+    problemsData = await (await fetch("/api/problems")).json();
+  } catch {
+    return;
+  }
+  renderProblems();
+}
+
+function timeSpan(g) {
+  return g.count > 1 && g.last - g.first > 60 ? `${clock(g.first)} to ${clock(g.last)}` : `${dayName(g.last)}, ${clock(g.last)}`;
+}
+
+function healthCard(rows) {
+  const card = element("section", "health");
+  const head = element("div", "health-head");
+  head.append(element("h2", null, "How the models answer"), element("span", null, "Last hour"));
+  card.append(head);
+  if (!rows.length) {
+    card.append(element("p", "health-say", "No live checks in the last hour."));
+    return card;
+  }
+  const worst = rows.map((r) => ({ ...r, share: r.failed / r.calls })).sort((a, b) => b.share - a.share)[0];
+  const slow = worst.share > 0.05;
+  const say = slow
+    ? `${worst.model} is slow right now: ${worst.failed} of ${worst.calls} checks got no answer in time. One missed check changes nothing, because the next check looks again.`
+    : worst.failed ? `All models answer. ${worst.failed} of ${worst.calls} ${worst.model} checks got no answer in time, which is normal.`
+      : "All models answer normally.";
+  card.append(element("p", "health-say" + (slow ? " slow" : ""), say));
+  const table = element("table", "health-table");
+  const headRow = element("tr");
+  for (const word of ["Model", "Checks", "Missed", "Typical", "Slowest"]) headRow.append(element("th", null, word));
+  const thead = element("thead");
+  thead.append(headRow);
+  const tbody = element("tbody");
+  for (const r of rows) {
+    const row = element("tr");
+    const missed = r.failed ? `${r.failed} (${Math.round((r.failed / r.calls) * 100)}%)` : "0";
+    for (const cell of [r.model, String(r.calls), missed, r.median_s != null ? `${r.median_s} s` : "–", r.slowest_s != null ? `${r.slowest_s} s` : "–"]) {
+      row.append(element("td", null, cell));
+    }
+    tbody.append(row);
+  }
+  table.append(thead, tbody);
+  card.append(table);
+  return card;
+}
+
+function problemNode(g, where) {
+  const item = element("details", `problem level-${g.level}`);
+  item.dataset.id = `${where}-${g.id}`;
+  const summary = element("summary");
+  const words = element("span", "problem-words");
+  const meta = [g.source, timeSpan(g), g.count > 1 ? `${g.count} times` : "", !g.open && g.level !== "note" ? "passed" : ""];
+  words.append(element("b", null, g.title), element("small", null, meta.filter(Boolean).join(" · ")));
+  summary.append(element("i", "level-dot"), words, element("span", "level-word", LEVEL_WORD[g.level] || "Note"));
+  const body = element("div", "problem-body");
+  if (g.hint) body.append(element("p", null, g.hint));
+  if (g.detail) body.append(element("pre", "code-block", g.detail));
+  const row = element("div", "problem-buttons");
+  row.append(button("Copy details", "pill-button small ghost", async (event) => {
+    const b = event.currentTarget;
+    await navigator.clipboard.writeText(JSON.stringify(g, null, 1)).catch(() => {});
+    b.lastChild.textContent = "Copied";
+  }, "copy"));
+  const rule = rules.find((r) => r.id === g.rule_id);
+  if (rule) {
+    const open = element("a", "pill-button small ghost", "Open the Whenever");
+    open.href = `#/whenever/${rule.id}`;
+    row.append(open);
+  }
+  if (g.open) {
+    row.append(button("Mark as read", "link-button", async () => {
+      await postJson(`/api/problems/${g.id}/dismiss`).catch(() => {});
+      await refreshState();
+      loadProblems(true);
+    }));
+  }
+  body.append(row);
+  item.append(summary, body);
+  return item;
+}
+
+function renderProblems() {
+  if (!problemsData) return;
+  const key = JSON.stringify([problemsData, problemFilter, rules.map((r) => r.id)]);
+  if (key === keys.problems) return;
+  keys.problems = key;
+  const box = $("problems");
+  const opened = new Set([...box.querySelectorAll("details[open]")].map((d) => d.dataset.id));
+  const groups = problemsData.groups || [];
+  const open = groups.filter((g) => g.open);
+
+  const needs = element("section", "needs");
+  needs.append(element("h2", "section-title", "Needs you"));
+  if (open.length) {
+    const list = element("div", "problem-list");
+    list.append(...open.map((g) => problemNode(g, "open")));
+    needs.append(list);
+  } else {
+    const good = element("p", "all-good");
+    good.append(icon("check"), element("span", null, "Nothing needs you right now."));
+    needs.append(good);
+  }
+
+  const log = element("section", "problem-log");
+  const chips = element("div", "chips filter-chips");
+  for (const [kind, label] of [["all", "Everything"], ["warn", "Warnings and errors"], ["note", "Notes"]]) {
+    chips.append(button(label, "chip" + (problemFilter === kind ? " on" : ""), () => { problemFilter = kind; renderProblems(); }));
+  }
+  const shown = groups.filter((g) => problemFilter === "all" || (problemFilter === "note" ? g.level === "note" : g.level !== "note"));
+  const list = element("div", "problem-list");
+  list.append(...shown.slice(0, 150).map((g) => problemNode(g, "log")));
+  if (!shown.length) list.append(element("p", "note", "Nothing here."));
+  const tools = element("div", "log-tools");
+  tools.append(button("Copy the whole log", "pill-button small ghost", async (event) => {
+    const b = event.currentTarget;
+    await navigator.clipboard.writeText(JSON.stringify(problemsData, null, 1)).catch(() => {});
+    b.lastChild.textContent = "Copied";
+  }, "copy"));
+  const raw = element("a", "link-button", "Open the raw log");
+  raw.href = "/api/problems";
+  raw.target = "_blank";
+  raw.rel = "noopener";
+  tools.append(raw);
+  log.append(element("h2", "section-title", "Everything that went wrong"),
+    element("p", "note", "Repeats are grouped. Notes are small things that fixed themselves, such as one missed check."),
+    chips, list, tools);
+
+  box.replaceChildren(healthCard(problemsData.health || []), needs, log);
+  box.querySelectorAll("details").forEach((d) => { if (opened.has(d.dataset.id)) d.open = true; });
 }
 
 async function postJson(url, body) {
@@ -303,19 +480,28 @@ function proofFacts(check) {
     const peak = Math.round(check.peak_motion || 0);
     facts.push({ pass: peak >= check.min_motion, text: `Movement ${peak}, needed ${Math.round(check.min_motion)}` });
   }
-  if (!answers.length) {
+  if (!answers.length && check.target) {
     const count = (check.boxes || []).length;
-    const sure = check.conf == null ? "" : `, confidence ${check.conf.toFixed(2)}`;
-    facts.push({ pass: count > 0, text: `SAM found ${count} ${check.target}${sure}` });
+    const sure = check.conf == null ? "" : `, ${Math.round(check.conf * 100)}% sure`;
+    facts.push({ pass: count > 0, text: count ? `Found ${count === 1 ? article(check.target) : count} ${check.target}${sure}`
+      : `Found no ${check.target}` });
   }
   return facts;
 }
 
-async function showEvidence(id) {
-  const check = await (await fetch("/api/check/" + id)).json();
+async function showEvidence(id, t) {
+  const reply = await fetch(`/api/check/${encodeURIComponent(id)}${t ? `?t=${t}` : ""}`).catch(() => null);
+  const check = reply && reply.ok ? await reply.json() : null;
   const body = $("evidence-body");
   body.replaceChildren();
-  const framePath = (name) => `/evidence/${check.session}/${name}`;
+  if (!check) {
+    body.append(element("p", "sentence", "The proof of this one is no longer kept. Whenever keeps proof for a while, "
+      + "and the oldest goes first."));
+    $("evidence").showModal();
+    return;
+  }
+  // A check that saw only the cameras that matter keeps that picture: the Why view shows what the model saw.
+  const framePath = (name) => `/evidence/${check.session}/${name}${check.focus ? "?view=focus" : ""}`;
 
   const proof = element("div", "proof");
   const image = document.createElement("img");
@@ -380,7 +566,10 @@ async function showEvidence(id) {
   body.append(row);
   $("evidence").showModal();
 
-  const outline = check.outline || (await (await fetch(`/api/check/${id}/outline`, { method: "POST" })).json()).outline;
+  // An outline is drawn on the whole wall, so a picture of only some cameras goes without it.
+  if (check.focus) return;
+  const outline = check.outline || (await (await fetch(`/api/check/${encodeURIComponent(id)}/outline`, { method: "POST" })
+    .catch(() => null))?.json().catch(() => ({})))?.outline;
   if (outline) {
     await image.decode();
     paintOutline(proofInk, outline, { left: 0, top: 0, width: proofInk.clientWidth, height: proofInk.clientHeight });
@@ -515,13 +704,16 @@ function clickToFrame(event) {
   return { x, y };
 }
 
+function pointedWhere(value) {
+  const views = [value?.camera, ...(value?.also || [])].filter(Boolean);
+  return views.length ? `seen in ${joinList(views)}` : "";
+}
+
 function setPointed(value) {
   pointed = value;
   $("pointed-box").hidden = !value;
   $("pointed-name").textContent = value?.noun || "";
-  if (value) {
-    $("point-text").textContent = `Got it: ${value.noun}. Tap again to change it.`;
-  }
+  $("pointed-where").textContent = value ? pointedWhere(value) : "";
 }
 
 async function cameraCommand(command) {
@@ -604,39 +796,240 @@ async function pointAt(event) {
     setAiming(null);
     return cameraCommand({ do: "aim", camera, x: spot.x, y: spot.y });
   }
-  drawFrame();
-  const data = full.toDataURL("image/jpeg", 0.8);
-  const freeze = $("freeze");
-  frozenDraw = null;
-  freeze.src = data;
-  freeze.hidden = false;
-  clearInk();
-  placeTag("Looking", null);
-  holdFreeze(FREEZE_MS * 2);
+  openPointSheet(spot);
+}
+
+/* ---------- Point at a thing ---------- */
+
+// A still picture of every camera, at full size. The person taps a thing in it, checks the name,
+// and stays where they were: in Create, or on Live.
+let pointShot = null;
+let pointRun = 0;
+
+function snapshot() {
+  const source = liveCamera && liveCanvas.width ? liveCanvas : video;
+  const width = source.videoWidth || source.width;
+  const height = source.videoHeight || source.height;
+  if (!width || !height) return null;
+  const scale = Math.min(1, 1920 / width);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
+  return { url: canvas.toDataURL("image/jpeg", 0.88), w: canvas.width, h: canvas.height };
+}
+
+function resetPointSheet(text = "Tap the thing you mean.") {
+  pointRun++;
+  $("point-say").textContent = text;
+  $("point-result").replaceChildren();
+  $("point-tag").hidden = true;
+  const ink = $("point-ink");
+  ink.getContext("2d").clearRect(0, 0, ink.width, ink.height);
+}
+
+// "create" points for a new Whenever. "ask" points at a thing to ask about.
+let pointMode = "create";
+
+function openPointSheet(spot, mode = "create") {
+  pointMode = mode;
+  const shot = snapshot();
+  if (!shot) return flash("The camera is not ready yet.");
+  pointShot = shot;
+  $("point-image").src = shot.url;
+  resetPointSheet();
+  if (!$("point-sheet").open) $("point-sheet").showModal();
+  if (spot) $("point-image").decode().catch(() => {}).then(() => pointHere(spot));
+}
+
+function pointTag(text, box) {
+  const tag = $("point-tag");
+  tag.textContent = text;
+  tag.hidden = false;
+  tag.style.left = box ? `${(box.x1 / box.w) * 100}%` : "50%";
+  tag.style.top = box ? `${(box.y1 / box.h) * 100}%` : "50%";
+  tag.classList.toggle("centered", !box);
+}
+
+async function pointHere(spot) {
+  resetPointSheet("Looking at what you tapped.");
+  const run = pointRun;
+  pointTag("Looking", null);
   try {
     const result = await postJson("/api/point", {
-      frame: data.split(",")[1],
-      x: Math.round(spot.x * (full.width - 1)),
-      y: Math.round(spot.y * (full.height - 1)),
-      w: full.width,
-      h: full.height,
+      frame: pointShot.url.split(",")[1],
+      x: Math.round(spot.x * (pointShot.w - 1)),
+      y: Math.round(spot.y * (pointShot.h - 1)),
+      w: pointShot.w,
+      h: pointShot.h,
     });
+    if (run !== pointRun) return;
     if (!result.found) {
-      placeTag("Nothing there. Try again.", null);
-      holdFreeze(POINT_MS);
+      pointTag("Nothing there", null);
+      $("point-say").textContent = "SAM found no single thing there. Tap the middle of the thing.";
       return;
     }
-    paintOutline(ink, result.box, videoArea());
-    placeTag("Naming it", result.box);
+    const image = $("point-image");
+    paintOutline($("point-ink"), result.box, { left: 0, top: 0, width: image.clientWidth, height: image.clientHeight });
+    pointTag("Naming it", result.box);
     const named = await postJson(`/api/point/${result.id}/name`);
-    placeTag(named.noun, result.box);
-    setPointed({ id: result.id, noun: named.noun });
-    holdFreeze(POINT_MS);
+    if (run !== pointRun) return;
+    pointTag(named.noun || "What is it?", result.box);
+    $("point-say").textContent = result.camera
+      ? `You tapped something in ${result.camera}${result.kind === "moving" ? ", a camera that moves. Rules find it there by its look" : ""}.`
+      : "You tapped this.";
+    showFound(result, named, run);
   } catch (error) {
-    endFreeze();
-    flash(error.message);
+    if (run !== pointRun) return;
+    $("point-tag").hidden = true;
+    $("point-say").textContent = error.message;
   }
 }
+
+function alsoChoice(item) {
+  const choice = element("label", "also-choice");
+  const box = element("input");
+  box.type = "checkbox";
+  box.checked = true;
+  box.value = item.camera;
+  const picture = element("img");
+  picture.src = `data:image/jpeg;base64,${item.crop}`;
+  picture.alt = `The same thing in ${item.camera}`;
+  const words = element("span", "also-words");
+  words.append(element("span", null, item.camera));
+  if (item.kind === "moving") words.append(element("small", null, "Moves, so found by its look"));
+  choice.append(box, picture, words);
+  return choice;
+}
+
+async function lookElsewhere(id, run, area) {
+  if ((state?.cameras?.length || 0) < 2) return area.replaceChildren();
+  area.replaceChildren(waitingNode("Looking for it in the other cameras"));
+  try {
+    const reply = await postJson(`/api/point/${id}/elsewhere`);
+    if (run !== pointRun) return;
+    if (!reply.also.length) {
+      area.replaceChildren(element("p", "note", "No other camera shows it right now."));
+      return;
+    }
+    const list = element("div", "also-list");
+    list.append(...reply.also.map(alsoChoice));
+    area.replaceChildren(element("b", "point-label", "Also seen in"), list,
+      element("p", "note", "The rule watches it from each view that stays ticked. Untick a view that shows something else."));
+  } catch (error) {
+    if (run !== pointRun) return;
+    area.replaceChildren(element("p", "note", error.message));
+  }
+}
+
+function showFound(result, named, run) {
+  const card = element("div", "point-found");
+  if (named.crop) {
+    const crop = element("img", "point-crop");
+    crop.src = `data:image/jpeg;base64,${named.crop}`;
+    crop.alt = "A close view of what you tapped";
+    card.append(crop);
+  }
+  const words = element("div", "point-words");
+  const nameLabel = element("label", "point-label", "What is it?");
+  const name = element("input", "point-input");
+  name.id = "point-name";
+  name.value = named.noun || "";
+  name.maxLength = 40;
+  name.placeholder = "Name it, such as gate";
+  nameLabel.htmlFor = name.id;
+  const said = element("p", "note", named.noun
+    ? `Spark thinks it is a ${named.noun}. Change the name if that is wrong.`
+    : "Spark could not tell what it is. Type its name.");
+  const noteLabel = element("label", "point-label", "Anything Wonder should know about it?");
+  const note = element("input", "point-input");
+  note.id = "point-note";
+  note.maxLength = 300;
+  note.placeholder = "Optional. For example: the sliding gate, it opens to the left.";
+  noteLabel.htmlFor = note.id;
+  words.append(nameLabel, name, said, noteLabel, note);
+  card.append(words);
+
+  const also = element("div", "point-also");
+  let searched = named.noun || "";
+  const again = button("Look again with this name", "link-button", async () => {
+    again.hidden = true;
+    try {
+      await postJson(`/api/point/${result.id}/confirm`, { noun: name.value });
+      searched = name.value.trim();
+      lookElsewhere(result.id, run, also);
+    } catch (error) {
+      also.replaceChildren(element("p", "note error", error.message));
+    }
+  });
+  again.hidden = true;
+  name.addEventListener("input", () => {
+    again.hidden = !name.value.trim() || name.value.trim().toLowerCase() === searched.toLowerCase() || (state?.cameras?.length || 0) < 2;
+  });
+
+  const error = element("p", "note error", "");
+  const use = button("Use it", "pill-button", async () => {
+    if (!name.value.trim()) {
+      error.textContent = "Give it a name first.";
+      name.focus();
+      return;
+    }
+    use.disabled = true;
+    const cameras = [...also.querySelectorAll("input[type=checkbox]")].filter((b) => b.checked).map((b) => b.value);
+    try {
+      const reply = await postJson(`/api/point/${result.id}/confirm`, {
+        noun: name.value, note: note.value, cameras: also.querySelector(".also-list") ? cameras : null,
+      });
+      setPointed({ id: result.id, noun: reply.noun, camera: reply.camera, also: reply.also });
+      $("point-sheet").close();
+      if (screen === "create") updatePreview();
+      flash(`Got it: ${reply.noun}.`, screen === "create" ? null : "#/create", "Write a Whenever");
+    } catch (err) {
+      error.textContent = err.message;
+      use.disabled = false;
+    }
+  }, "check");
+  const askIt = button("Ask about it", pointMode === "ask" ? "pill-button" : "pill-button ghost", async () => {
+    if (!name.value.trim()) {
+      error.textContent = "Give it a name first.";
+      name.focus();
+      return;
+    }
+    try {
+      const reply = await postJson(`/api/point/${result.id}/confirm`, { noun: name.value, note: note.value, cameras: null });
+      askContext.thing = { id: result.id, noun: reply.noun, camera: reply.camera || result.camera, crop: named.crop };
+      askContext.occurrence = null;
+      $("point-sheet").close();
+      if (!ASK_SCREENS.has(screen)) location.hash = "#/live";
+      renderAskBar();
+      setTimeout(() => { $("ask-input").focus(); showAskIdeas(); }, 80);
+    } catch (err) {
+      error.textContent = err.message;
+    }
+  }, "search");
+  const row = element("div", "pair-result");
+  if (pointMode === "ask") row.append(askIt, use);
+  else row.append(use, askIt);
+  row.append(button("Tap something else", "link-button", () => resetPointSheet()));
+  if (pointMode === "ask") use.className = "pill-button ghost";
+  $("point-result").replaceChildren(card, also, again, error, row);
+  if (!named.noun) name.focus();
+  if (named.noun) lookElsewhere(result.id, run, also);
+}
+
+$("point-image").addEventListener("click", (event) => {
+  const rect = event.currentTarget.getBoundingClientRect();
+  pointHere({ x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height });
+});
+$("point-refresh").addEventListener("click", () => {
+  const shot = snapshot();
+  if (!shot) return;
+  pointShot = shot;
+  $("point-image").src = shot.url;
+  resetPointSheet();
+});
+$("point-close").addEventListener("click", () => { pointRun++; $("point-sheet").close(); });
+$("point-sheet").addEventListener("click", (event) => { if (event.target === $("point-sheet")) { pointRun++; $("point-sheet").close(); } });
 
 function drawBoxes(results) {
   overlay.width = overlay.clientWidth;
@@ -750,12 +1143,10 @@ function record(r) {
   const key = `${r.rule}/${r.sensor}`;
   const h = history.get(key) || { hits: [], text: "" };
   h.hits = [...h.hits, r.hit].slice(-HISTORY_LENGTH);
-  if (r.spark_s != null) {
-    const unit = r.spark_frames === 1 ? "frame" : "frames";
-    h.text = `Spark ${r.answer ? "yes" : "no"}, ${r.spark_frames} of ${r.frames_covered} ${unit}, ${seconds(r.spark_s)}`;
-  } else if (r.sam_s != null) {
-    const conf = r.conf != null ? ` ${r.conf.toFixed(2)}` : "";
-    h.text = `SAM ${r.hit ? "found" : "nothing"}${conf}, ${seconds(r.sam_s)}`;
+  // Plain words for the person. The model's name and timing are in the Why view and under Problems.
+  if (r.spark_s != null || r.sam_s != null) {
+    h.text = `Last look at ${clockSeconds(Date.now() / 1000)}: ${r.hit ? "yes" : "no"}`
+      + (r.left_out?.length ? ` (${joinList(r.left_out)} left out for now)` : "");
   }
   history.set(key, h);
 }
@@ -793,6 +1184,12 @@ function needsStart() {
 function route() {
   const [path] = location.hash.slice(1).split("?");
   const parts = path.split("/").filter(Boolean);
+  if (parts[0] === "phone-camera") {
+    enterCameraMode();
+    parts[0] = "live";
+  } else if (cameraMode) {
+    leaveCameraMode();
+  }
   let name = parts[0] || (needsStart() ? "start" : "whenevers");
   if (!SCREENS.some((s) => s.dataset.screen === name)) name = "whenevers";
   const changed = name !== screen;
@@ -803,25 +1200,29 @@ function route() {
     if (s.dataset.screen === "live") s.classList.toggle("offstage", !on);
     else s.hidden = !on;
   }
+  const wide = matchMedia("(min-width: 960px)").matches;
   document.querySelectorAll("[data-nav]").forEach((a) => {
-    const current = a.dataset.nav === name || (name === "whenever" && a.dataset.nav === "whenevers");
+    const current = a.dataset.nav === name || (name === "whenever" && a.dataset.nav === "whenevers")
+      || (name === "cameras" && !wide && a.dataset.nav === "live");
     if (current) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   });
-  $("point-banner").hidden = !(name === "live" && /point=1/.test(location.hash));
   focusId = name === "live" ? (location.hash.match(/rule=([a-z0-9]+)/) || [])[1] || null : null;
   renderFocus(true);
   if (changed) window.scrollTo(0, 0);
   if (name === "whenever") renderDetail(parts[1], true);
   if (name === "activity") {
-    showActivityView(parts[1] === "reports" ? "reports" : "feed");
+    showActivityView(["reports", "problems"].includes(parts[1]) ? parts[1] : "feed");
     loadJournal(true);
     localStorage.setItem("whenever-seen", String(Date.now() / 1000));
     $("activity-dot").hidden = true;
   }
   if (name === "actions") renderPhoneCard(true);
+  if (name === "cameras") renderCamerasScreen(true);
   if (name === "whenevers") renderList(true);
   if (name === "create") renderCreate();
+  if (changed && name !== "whenever") askContext.cameras = null;
+  renderAskBar();
 }
 
 window.addEventListener("hashchange", route);
@@ -836,6 +1237,13 @@ function watchingText(rule) {
   return (state?.cameras?.length || 0) > 1 ? "Watching all cameras" : "Watching";
 }
 
+function numberTile(value, label) {
+  const tile = element("span", "number-tile");
+  tile.append(element("b", null, String(value)), element("span", null, label));
+  return tile;
+}
+
+// The server says whether the Whenever can see what it needs right now, not only that it is on.
 function whereLine(rule) {
   const where = element("span", "card-where");
   if (rule.schedules?.length && !rule.sensors?.length) {
@@ -843,12 +1251,18 @@ function whereLine(rule) {
     where.append(icon("clock"), element("span", null, s.days?.length ? `${s.when} on ${s.days.join(", ")}` : s.when));
     return where;
   }
-  if (!rule.paused) where.classList.add("watching");
-  where.append(element("i", "live-dot"), element("span", null, rule.paused ? "Stopped" : watchingText(rule)));
+  const status = rule.status || { level: rule.paused ? "off" : "ok", text: rule.paused ? "Stopped" : watchingText(rule) };
+  where.classList.add(`status-${status.level}`);
+  if (status.level === "ok") where.classList.add("watching");
+  where.append(status.level === "warn" ? icon("alert") : element("i", "live-dot"), element("span", null, status.text));
   return where;
 }
 
-// The trigger and the actions as icon tiles, so a list can be scanned without reading every card.
+// What each tile on a card means, in a word or two.
+const ICON_WORDS = { live: "Cameras", clock: "On a schedule", phone: "Alerts", bulb: "Light", move: "Turns a camera",
+  screen: "Shows it", speaker: "Speaks", chart: "Counts", globe: "Web action" };
+
+// The trigger and the actions as labelled tiles, so a list can be scanned without reading every card.
 function ruleIcons(rule) {
   const text = (rule.sentence || "").toLowerCase();
   const names = [rule.schedules?.length && !rule.sensors?.length ? "clock" : "live"];
@@ -862,9 +1276,10 @@ function ruleIcons(rule) {
     if (action.kind !== "phone" && text.includes(action.name.toLowerCase())) names.push("globe");
   }
   const tiles = element("span", "icon-tiles");
-  for (const name of [...new Set(names)].slice(0, 5)) {
+  for (const name of [...new Set(names)].slice(0, 4)) {
     const tile = element("span", "icon-tile");
-    tile.append(icon(name));
+    tile.append(icon(name), element("span", null, ICON_WORDS[name] || ""));
+    tile.title = ICON_WORDS[name] || "";
     tiles.append(tile);
   }
   return tiles;
@@ -892,12 +1307,25 @@ function ruleCard(rule, tag = "a") {
   if (tag === "a") card.href = `#/whenever/${rule.id}`;
   const top = element("div", "card-top");
   top.append(ruleIcons(rule), toggleSwitch(rule));
-  card.append(top, sentenceNode(rule.sentence || rule.name));
+  // The name says what it is. The person's own words follow, small, for the details.
+  card.append(top, element(tag === "a" ? "h3" : "h1", "card-name", rule.name),
+    sentenceNode(rule.sentence || rule.name, "sentence-small"));
+  const trouble = openProblems(rule);
+  if (trouble.length) {
+    const line = element("span", "card-trouble");
+    const waiting = trouble.every((g) => g.level === "warn" && ["Muse Spark", "SAM 3.1"].includes(g.source));
+    line.append(icon("alert"), element("span", null, waiting ? "Checks wait for Meta to answer"
+      : trouble.some((g) => g.level === "error") ? "Needs a look" : "Has a warning"));
+    card.append(line);
+  }
   const foot = element("div", "card-foot");
-  foot.append(whereLine(rule), element("span", null, rule.fired ? `Ran ${rule.fired} ${rule.fired === 1 ? "time" : "times"}` : "Not run yet"));
-  if (rule.last_fired) foot.append(element("span", null, `Last ${clock(rule.last_fired)}`));
-  if (rule.pointed) foot.append(element("span", null, `Pointed at ${rule.pointed}`));
-  card.append(foot);
+  foot.append(whereLine(rule));
+  const numbers = element("div", "card-numbers");
+  const today = rule.today ?? 0;
+  numbers.append(numberTile(today, today === 1 ? "time today" : "times today"));
+  for (const [name, value] of Object.entries(rule.values || {}).slice(0, 2)) numbers.append(numberTile(value, name));
+  if (rule.last_fired) numbers.append(numberTile(clock(rule.last_fired), dayName(rule.last_fired) === "Today" ? "last time" : `last time, ${dayName(rule.last_fired)}`));
+  card.append(numbers, foot);
   return card;
 }
 
@@ -911,8 +1339,9 @@ function firedTab(rule) {
 
 function renderList(force) {
   const visible = rules.filter((r) => filter === "all" || (filter === "on" ? !r.paused : r.paused));
-  const key = JSON.stringify([filter, visible.map((r) => [r.id, r.paused, r.fired, r.last_fired, r.sentence]),
-    Math.floor(Date.now() / 60000), state?.cameras?.length]);
+  const key = JSON.stringify([filter, visible.map((r) => [r.id, r.paused, r.fired, r.last_fired, r.sentence, r.today,
+    r.status, r.values]),
+    Math.floor(Date.now() / 60000), state?.cameras?.length, openProblems().map((g) => [g.id, g.rule_id, g.level])]);
   if (!force && key === keys.list) return;
   keys.list = key;
   const list = $("whenever-list");
@@ -964,8 +1393,8 @@ $("filter").addEventListener("click", (event) => {
 function renderDetail(id, force) {
   const rule = rules.find((r) => r.id === id);
   const box = $("detail");
-  const key = JSON.stringify(rule ? [rule.id, rule.paused, rule.fired, rule.last_fired, rule.sentence,
-    rule.plan, rule.schedules.map((s) => s.next)] : null);
+  const key = JSON.stringify(rule ? [rule.id, rule.paused, rule.fired, rule.last_fired, rule.sentence, rule.today,
+    rule.status, rule.values, rule.plan, rule.schedules.map((s) => s.next), openProblems(rule).map((g) => [g.id, g.count])] : null);
   if (!force && key === keys.detail) {
     if (rule) renderValues(rule);
     return;
@@ -984,12 +1413,17 @@ function renderDetail(id, force) {
   const hero = ruleCard(rule, "div");
   hero.classList.add("detail-card");
   const nodes = [hero];
+  for (const g of openProblems(rule)) {
+    const notice = element("div", `detail-trouble level-${g.level}`);
+    const words = element("div");
+    words.append(element("b", null, g.title), element("p", null, g.hint || ""));
+    const more = element("a", "link-button", "See details");
+    more.href = "#/activity/problems";
+    notice.append(icon("alert"), words, more);
+    nodes.push(notice);
+  }
   const tab = firedTab(rule);
   if (tab) nodes.push(tab);
-
-  const values = element("div", "values");
-  values.id = "values-" + rule.id;
-  nodes.push(values);
 
   const actionsRow = element("div", "detail-actions");
   const live = element("a", "pill-button", null);
@@ -1002,12 +1436,20 @@ function renderDetail(id, force) {
   );
   nodes.push(actionsRow);
 
-  nodes.push(element("h2", "section-title", "What it does"));
+  // What happened comes first. How it works is for the curious, so it waits behind one tap.
+  nodes.push(element("h2", "section-title", "What happened"));
+  const feed = element("ol", "feed");
+  feed.id = "detail-feed";
+  nodes.push(feed);
+
+  const works = element("details", "how-it-works");
+  works.append(element("summary", null, "How it works"));
+  works.append(element("h3", "section-title small", "What it does"));
   const plan = element("ol", "plan");
   for (const step of rule.plan || []) plan.append(element("li", null, step));
-  nodes.push(plan);
+  works.append(plan);
 
-  nodes.push(element("h2", "section-title", "How it watches"));
+  works.append(element("h3", "section-title small", "How it watches"));
   const how = element("dl", "how");
   for (const s of rule.schedules || []) {
     const next = new Date(s.next * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
@@ -1022,7 +1464,7 @@ function renderDetail(id, force) {
     dd.append(sensorRow(rule, sensor));
     how.append(dd);
   }
-  nodes.push(how);
+  works.append(how);
   const code = element("details", "code");
   code.append(element("summary", null, "Show the code Wonder wrote"));
   const pre = element("pre");
@@ -1030,12 +1472,8 @@ function renderDetail(id, force) {
   code.ontoggle = async () => {
     if (code.open && !pre.textContent) pre.textContent = await (await fetch(`/api/rule/${rule.id}/code`)).text();
   };
-  nodes.push(code);
-
-  nodes.push(element("h2", "section-title", "Activity"));
-  const feed = element("ol", "feed");
-  feed.id = "detail-feed";
-  nodes.push(feed);
+  works.append(code);
+  nodes.push(works);
 
   box.replaceChildren(...nodes);
   renderValues(rule);
@@ -1078,8 +1516,12 @@ function renderValues(rule) {
 function renderDetailFeed(rule) {
   const feed = $("detail-feed");
   if (!feed) return;
-  const rows = journal.filter((r) => r.rule === rule.name && shown(r, "all")).slice(-40).reverse();
-  feed.replaceChildren(...(rows.length ? rows.map(entryNode) : [element("li", "note", "Nothing yet. Events appear here with their proof.")]));
+  const items = feedItems(journal.filter((r) => r.rule === rule.name)).filter((item) => cardMatches(item, "all")).slice(0, 30);
+  const key = JSON.stringify([rule.id, items.length, items[0]?.t, journal.length]);
+  if (feed.dataset.key === key) return;
+  feed.dataset.key = key;
+  feed.replaceChildren(...(items.length ? feedNodes(items)
+    : [element("li", "note", "Nothing yet. Each time it happens, it shows up here with its proof.")]));
 }
 
 /* ---------- Create ---------- */
@@ -1100,9 +1542,8 @@ const TEMPLATES = [
 // Each choice under "then" is a phrase that joins the sentence. Actions come from the server.
 function thenOptions() {
   const options = [];
-  const phone = (state?.actions || []).find((a) => a.kind === "phone");
   options.push({ id: "phone", label: "Alert my phone", icon: "phone", phrase: "alert my phone with a picture",
-    ready: !!(phone && !phone.missing.length && state?.phone_paired), pair: true });
+    ready: !!state?.alerts?.places?.length, pair: true });
   options.push({ id: "screen", label: "Show it here", icon: "screen", phrase: "show it on the screen", ready: true });
   if (state?.platform === "darwin") options.push({ id: "speak", label: "Say it out loud", icon: "speaker", phrase: "say it out loud", ready: true });
   for (const camera of state?.controls || []) {
@@ -1141,7 +1582,7 @@ function renderThenChips() {
       updatePreview();
     }, o.icon);
     chip.setAttribute("aria-pressed", String(thenPicked.has(o.id)));
-    if (!o.ready) chip.title = o.pair ? "Pair your phone first" : "Needs a key in Actions";
+    if (!o.ready) chip.title = o.pair ? "Pair your phone first. It takes about a minute." : "Needs a key in Actions";
     return chip;
   }));
 }
@@ -1363,7 +1804,7 @@ function renderCheck(sentence, summary) {
   card.append(read);
   const facts = element("div", "check-facts");
   if (summary.watch?.length) facts.append(element("span", null, `Watches ${joinList(summary.watch)}`));
-  if (pointed) facts.append(element("span", null, `Knows "this" means the ${pointed.noun}`));
+  if (pointed) facts.append(element("span", null, `Knows "this" means the ${pointed.noun}${pointedWhere(pointed) ? `, ${pointedWhere(pointed)}` : ""}`));
   if (example) facts.append(element("span", null, `Tests itself on your ${example.frames.length}-frame example`));
   facts.append(element("span", null, "Writing it costs about $0.15 to $0.35 and takes about a minute."));
   card.append(facts);
@@ -1478,12 +1919,9 @@ $("clear-example").addEventListener("click", () => {
   $("example-box").hidden = true;
 });
 
-// Pointing and recording happen in the live view, then the person returns to the sentence.
-$("point-start").addEventListener("click", () => {
-  $("point-text").textContent = "Tap the thing you mean.";
-  location.hash = "#/live?point=1";
-});
-$("point-done").addEventListener("click", () => { location.hash = "#/create"; });
+// Pointing opens over Create, so the person never leaves the sentence. Recording uses the live view.
+$("point-start").addEventListener("click", () => openPointSheet());
+$("change-pointed").addEventListener("click", () => openPointSheet());
 $("record").addEventListener("click", async () => {
   location.hash = "#/live";
   await wait(350);
@@ -1495,11 +1933,15 @@ $("record").addEventListener("click", async () => {
 
 const KIND_ICON = { event: "eye", notify: "bell", draw: "photo", image: "photo", gallery: "photo", action: "bolt",
   record: "note", error: "alert", say: "speaker" };
-const ALERT_KINDS = new Set(["notify", "draw", "image", "gallery", "event", "say"]);
+const ALERT_KINDS = new Set(["notify", "image", "gallery", "event", "say"]);
 
+// A row outside any occurrence card. Ends, logs, drawings and noted facts belong to a card's details.
 function shown(row, kind) {
-  if (row.kind === "end" || row.kind === "log") return false;
-  if (kind === "alerts") return ALERT_KINDS.has(row.kind);
+  if (["end", "log", "draw", "record"].includes(row.kind)) return false;
+  if (row.kind === "ask") return kind === "all" || kind === "asked";
+  if (kind === "asked") return false;
+  if (row.kind === "gallery" && !(row.values?.pictures || []).length) return false;
+  if (kind === "alerts") return row.kind === "notify" || (row.kind === "action" && row.name === "Phone");
   if (kind === "action") return row.kind === "action";
   if (kind === "error") return row.kind === "error" || (row.kind === "action" && row.values?.ok === false);
   return true;
@@ -1547,6 +1989,7 @@ function entryTitle(row) {
       if (row.name === "Phone") return row.values?.ok === false ? "Phone alert failed" : "Phone alert sent";
       return row.values?.ok === false ? `${row.name} failed: ${row.text}` : `${row.name}: done`;
     case "record": return words(row.name);
+    case "gallery": return (row.text || "Pictures").replace(/\s*\(\d+\)$/, "");
     default: return row.text || row.name || row.kind;
   }
 }
@@ -1560,18 +2003,75 @@ function entryNode(row) {
   badge.append(icon(KIND_ICON[row.kind] || "pulse"));
   const text = element("div", "entry-text");
   const meta = [clock(row.t), row.rule || "Whenever"];
+  if (row.values?.cameras?.length) meta.push(joinList(row.values.cameras));
   if (row.kind === "record") meta.push(recordNote(row.values || {}));
   text.append(element("b", null, entryTitle(row)), element("div", "entry-meta", meta.join(" · ")));
-  if (row.values?.check) {
+  if (row.values?.check && row.kind === "event") {
     const buttons = element("div", "entry-buttons");
-    buttons.append(button("Why?", "chip", () => showEvidence(row.values.check), "eye"),
+    buttons.append(button("Why?", "chip", () => showEvidence(row.values.check, row.t), "eye"),
       labelButton(row.values.check, "right", "Right"), labelButton(row.values.check, "wrong", "Wrong"));
     text.append(buttons);
   }
   li.append(badge, text);
-  if (row.values?.picture) li.append(proofPicture(row));
+  if (row.values?.clip) li.append(clipNode(row.values.clip, row.values.picture, false));
+  else if (row.values?.picture) li.append(proofPicture(row));
   return li;
 }
+
+// A clip of only the cameras where it happened. In the feed it waits for a tap. The alert card plays it.
+function clipNode(url, poster, autoplay) {
+  const box = element("div", "entry-clip");
+  const clip = document.createElement("video");
+  clip.src = url;
+  if (poster) clip.poster = poster;
+  clip.muted = true;
+  clip.loop = true;
+  clip.playsInline = true;
+  clip.preload = autoplay ? "auto" : "none";
+  clip.setAttribute("aria-label", "A clip of what happened");
+  if (autoplay) {
+    clip.autoplay = true;
+  } else {
+    const play = button("", "clip-play", () => {
+      play.remove();
+      clip.controls = true;
+      clip.play().catch(() => {});
+    }, "play");
+    play.setAttribute("aria-label", "Play the clip");
+    box.append(play);
+  }
+  box.prepend(clip);
+  return box;
+}
+
+// An alert in the page: the cameras where it happened, playing, over whatever screen is open.
+let alertTimer = null;
+
+function showAlertCard(item) {
+  const card = $("alert-card");
+  const head = element("div", "alert-head");
+  const words = element("div", "place-words");
+  words.append(element("b", null, item.rule), element("small", null, [joinList(item.cameras || []), clock(Date.now() / 1000)].filter(Boolean).join(" · ")));
+  head.append(words, button("", "icon-button", hideAlertCard, "x"));
+  head.lastChild.setAttribute("aria-label", "Close the alert");
+  const media = item.clip ? clipNode(item.clip, item.url, true) : item.url ? Object.assign(element("img", "alert-picture"), { src: item.url, alt: "" }) : null;
+  const see = element("a", "pill-button small", "See it in Activity");
+  see.href = "#/activity";
+  see.addEventListener("click", hideAlertCard);
+  card.replaceChildren(head, ...(media ? [media] : []), element("p", null, item.text), see);
+  card.hidden = false;
+  clearTimeout(alertTimer);
+  alertTimer = setTimeout(hideAlertCard, 20000);
+}
+
+function hideAlertCard() {
+  clearTimeout(alertTimer);
+  $("alert-card").hidden = true;
+  $("alert-card").replaceChildren();
+}
+
+$("alert-card").addEventListener("pointerenter", () => clearTimeout(alertTimer));
+$("alert-card").addEventListener("pointerleave", () => { alertTimer = setTimeout(hideAlertCard, 8000); });
 
 // A wall frame shows six cameras, so the proof shows only the tile of the camera that fired.
 function tileOf(row) {
@@ -1610,37 +2110,198 @@ function proofPicture(row) {
   return pic;
 }
 
-function renderFeed(force) {
-  const rows = journal.filter((r) => shown(r, feedKind)).slice(-250).reverse();
-  const key = JSON.stringify([feedKind, rows.length, rows[0]?.t]);
-  if (!force && key === keys.feed) return;
-  keys.feed = key;
-  const list = $("activity-list");
-  if (!rows.length) {
-    const empty = element("li", "empty");
-    empty.append(element("h2", null, "Quiet so far"), element("p", null, "When a Whenever sees something, it shows up here with its proof frame."));
-    list.replaceChildren(empty);
-    $("activity-guide").textContent = "";
-    return;
+/* ---------- Occurrences: one card for each thing that happened ---------- */
+
+// An event and every step that its job took share one occurrence: the event's check. Older rows
+// carry no occurrence, so a row joins its rule's newest event of the minute before it.
+const JOIN_OLD_S = 60;
+
+function occurrenceOf(row) {
+  return row.values?.occurrence || (row.kind === "event" && !row.values?.step ? row.values?.check : null);
+}
+
+function feedItems(rows) {
+  const cards = new Map();
+  const loose = [];
+  const newest = {};
+  for (const row of rows) {
+    let id = occurrenceOf(row);
+    if (!id && row.kind !== "notify" && row.kind !== "gallery" && newest[row.rule] && row.t - newest[row.rule].t <= JOIN_OLD_S) {
+      id = newest[row.rule].id;
+    }
+    if (!id) {
+      loose.push({ t: row.t, row });
+      continue;
+    }
+    if (!cards.has(id)) cards.set(id, { id, t: row.t, rows: [] });
+    const card = cards.get(id);
+    card.rows.push(row);
+    if (row.kind === "event" && !row.values?.step) {
+      card.t = row.t;
+      newest[row.rule] = { id, t: row.t };
+    }
   }
+  return [...[...cards.values()].map((card) => ({ t: card.t, card })), ...loose].sort((a, b) => b.t - a.t);
+}
+
+function sentRows(card) {
+  return card.rows.filter((r) => ((r.kind === "action" && r.name === "Phone") || r.kind === "notify") && r.values?.how !== "repeat");
+}
+
+function cardMatches(item, kind) {
+  if (!item.card) return shown(item.row, kind);
+  if (kind === "asked") return false;
+  if (kind === "alerts") return sentRows(item.card).length > 0;
+  if (kind === "action") return item.card.rows.some((r) => r.kind === "action");
+  return true;
+}
+
+function duration(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s} s`;
+  return `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ""}`;
+}
+
+function sentNote(row) {
+  const places = row.values?.places || [];
+  const how = row.values?.how || row.values?.mode;
+  if (row.kind === "action" && row.values?.ok === false) return `The alert did not go out at ${clock(row.t)}`;
+  if (how === "here" || (!places.length && row.kind === "notify")) return `Shown here at ${clock(row.t)}`;
+  const where = places.length ? joinList(places) : "your phone";
+  // The picture goes out at once. The row is written when the clip has followed it.
+  return `${how === "reply" ? "Added to the alert on" : "Sent to"} ${where} at ${clockSeconds(row.values?.sent_at || row.t)}`;
+}
+
+function sentText(row) {
+  return row.kind === "action" ? row.values?.inputs?.text || "" : row.text || "";
+}
+
+function occurrenceCard(card) {
+  const rows = [...card.rows].sort((a, b) => a.t - b.t);
+  const event = rows.find((r) => r.kind === "event" && !r.values?.step) || rows[0];
+  const end = rows.find((r) => r.kind === "end" && !r.values?.step);
+  const sent = rows.filter((r) => ((r.kind === "action" && r.name === "Phone") || r.kind === "notify") && r.values?.how !== "repeat");
+  const first = sent.find((r) => r.values?.how !== "reply" && r.values?.mode !== "reply") || sent[0];
+  const li = element("li", "occurrence");
+  li.dataset.t = event.t;
+  if (sent.some((r) => r.values?.ok === false)) li.classList.add("problem");
+
+  const head = element("div", "occ-head");
+  const title = first ? sentText(first) : entryTitle(event);
+  const when = end ? `${clock(event.t)} to ${clock(end.t)} · ${duration(end.seconds ?? end.t - event.t)}`
+    : event.kind === "event" ? `${clock(event.t)} · still going` : clock(event.t);
+  const named = element("div", "occ-words");
+  named.append(element("b", null, title || entryTitle(event)),
+    element("span", "entry-meta", [when, event.rule, ...(first?.values?.cameras?.length ? [joinList(first.values.cameras)]
+      : cameraOf(event) ? [cameraOf(event)] : [])].join(" · ")));
+  head.append(named);
+  li.append(head);
+
+  // The cameras where it happened, as the phone got them: the clip, or else the picture.
+  const media = rows.find((r) => r.values?.clip) || first || event;
+  if (media.values?.clip) li.append(clipNode(media.values.clip, media.values.picture, false));
+  else if (media.values?.picture) li.append(proofPicture(media));
+
+  // Steps that matter to the person: what the armed sensors saw, and the pictures found.
+  const steps = element("div", "occ-steps");
+  for (const row of rows) {
+    if (row.kind === "event" && row.values?.step) {
+      steps.append(element("p", "occ-step", `${entryTitle(row)} at ${clock(row.t)}`));
+    } else if (row.kind === "gallery" && (row.values?.pictures || []).length) {
+      const pictures = element("div", "gallery");
+      for (const url of row.values.pictures) {
+        const open = document.createElement("button");
+        open.type = "button";
+        open.title = row.text;
+        open.onclick = () => openFrame(url, null, row.text);
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = row.text;
+        img.loading = "lazy";
+        open.append(img);
+        pictures.append(open);
+      }
+      steps.append(element("p", "occ-step", row.text.replace(/\s*\(\d+\)$/, "")), pictures);
+    }
+  }
+  for (const row of sent) {
+    const line = element("p", "occ-sent");
+    line.append(icon(row.values?.ok === false ? "alert" : (row.values?.places || []).length ? "send" : "bell"),
+      element("span", null, `${sentNote(row)}${row !== first && sentText(row) ? `: ${sentText(row)}` : ""}`));
+    steps.append(line);
+  }
+  if (steps.childNodes.length) li.append(steps);
+
+  const check = event.values?.check;
+  const buttons = element("div", "entry-buttons");
+  if (check) {
+    buttons.append(labelButton(check, "right", "Right"), labelButton(check, "wrong", "Wrong"),
+      button("Why?", "chip", () => showEvidence(check, event.t), "eye"));
+  }
+  if (event.kind === "event") {
+    buttons.append(button("Ask about this", "chip", () => askAboutOccurrence({
+      id: card.id, rule: event.rule, t: event.t, end: end?.t || null,
+    }), "search"));
+  }
+  const details = element("details", "occ-details");
+  details.append(element("summary", null, "Details"));
+  const lines = element("ol", "occ-lines");
+  for (const row of rows) {
+    let text = entryTitle(row);
+    if (row.kind === "event") text = `${row.values?.step ? "Step" : "What the model saw"}: ${row.text || entryTitle(row)}`;
+    if (row.kind === "record") text = `${words(row.name)}: ${recordNote(Object.fromEntries(
+      Object.entries(row.values || {}).filter(([k]) => k !== "occurrence")))}`;
+    if (row.kind === "end") text = `${row.values?.step ? "Step ended" : "Ended"} after ${duration(row.seconds || 0)}`;
+    if (row.kind === "draw") text = `Drew "${row.text}" on the picture`;
+    if (row.kind === "action" && row.name !== "Phone") text = entryTitle(row);
+    lines.append(element("li", null, `${clockSeconds(row.t)}  ${text}`));
+  }
+  details.append(lines);
+  li.append(buttons, details);
+  return li;
+}
+
+function clockSeconds(t) {
+  return new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function feedNodes(items) {
   const nodes = [];
   let day = "";
-  for (const row of rows) {
-    const d = dayName(row.t);
+  for (const item of items) {
+    const d = dayName(item.t);
     if (d !== day) {
       day = d;
       nodes.push(element("li", "day", d));
     }
-    nodes.push(entryNode(row));
+    nodes.push(item.card ? occurrenceCard(item.card) : item.row.kind === "ask" ? answerEntry(item.row) : entryNode(item.row));
   }
-  list.replaceChildren(...nodes);
+  return nodes;
+}
+
+function renderFeed(force) {
+  const items = feedItems(journal.slice(-1000)).filter((item) => cardMatches(item, feedKind)).slice(0, 120);
+  const key = JSON.stringify([feedKind, journal.length, journal[journal.length - 1]?.t]);
+  if (!force && key === keys.feed) return;
+  keys.feed = key;
+  const list = $("activity-list");
+  if (!items.length) {
+    const empty = element("li", "empty");
+    empty.append(element("h2", null, feedKind === "alerts" ? "No alerts yet" : "Quiet so far"),
+      element("p", null, feedKind === "alerts" ? "Each alert that reaches you shows up here, with the cameras where it happened."
+        : "When a Whenever sees something, it shows up here with its proof."));
+    list.replaceChildren(empty);
+    $("activity-guide").textContent = "";
+    return;
+  }
+  list.replaceChildren(...feedNodes(items));
   updateGuide();
 }
 
 // Guide words: the time span in view stays pinned while the person scrolls.
 function updateGuide() {
   if (screen !== "activity") return;
-  const entries = [...$("activity-list").querySelectorAll(".entry")];
+  const entries = [...$("activity-list").querySelectorAll(".entry, .occurrence")];
   const inView = entries.filter((e) => {
     const r = e.getBoundingClientRect();
     return r.bottom > 60 && r.top < innerHeight - 80;
@@ -1665,12 +2326,13 @@ function showActivityView(view) {
   $("activity-tabs").querySelectorAll("button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.view === view)));
   document.querySelectorAll("[data-view-panel]").forEach((p) => { p.hidden = p.dataset.viewPanel !== view; });
   if (view === "reports") renderReports();
+  if (view === "problems") loadProblems(true);
 }
 
 $("activity-tabs").addEventListener("click", (event) => {
   const b = event.target.closest("[data-view]");
   if (!b) return;
-  location.hash = b.dataset.view === "reports" ? "#/activity/reports" : "#/activity";
+  location.hash = b.dataset.view === "feed" ? "#/activity" : `#/activity/${b.dataset.view}`;
 });
 
 async function loadJournal(force) {
@@ -1685,11 +2347,15 @@ async function loadJournal(force) {
     return;
   }
   const seen = Number(localStorage.getItem("whenever-seen") || 0);
-  const fresh = journal.some((r) => r.t > seen && ["notify", "draw", "image", "gallery"].includes(r.kind));
-  $("activity-dot").hidden = !fresh || screen === "activity";
+  const fresh = journal.some((r) => r.t > seen && (r.kind === "notify" || (r.kind === "action" && r.name === "Phone")
+    || (r.kind === "event" && !r.values?.step)));
+  const trouble = openProblems().length > 0;
+  $("activity-dot").hidden = !(fresh || trouble) || screen === "activity";
+  $("activity-dot").classList.toggle("warn", trouble && !fresh);
   if (screen === "activity") {
     renderFeed();
     if (!document.querySelector('[data-view-panel="reports"]').hidden) renderReports();
+    if (!document.querySelector('[data-view-panel="problems"]').hidden) loadProblems();
   }
   if (screen === "whenever") {
     const id = location.hash.split("/")[2];
@@ -1703,7 +2369,8 @@ function renderReports() {
   start.setHours(0, 0, 0, 0);
   const since = start.getTime() / 1000;
   const today = journal.filter((r) => r.t >= since);
-  const events = today.filter((r) => r.kind === "event");
+  // A step that an armed sensor saw inside one event is not another event.
+  const events = today.filter((r) => r.kind === "event" && !r.values?.step);
   const hours = Array(24).fill(0);
   for (const r of events) hours[new Date(r.t * 1000).getHours()]++;
   const top = Math.max(1, ...hours);
@@ -1774,23 +2441,511 @@ function barCard(title, counts, emptyText, describe = () => ({})) {
 
 let pairDone = null;
 
-// Three steps: install ntfy, follow the private topic, and see a test alert arrive.
-async function openPairing(onDone) {
+/* ---------- Where alerts go: pairing ---------- */
+
+// The phone, the computer, a Telegram chat, an inbox or the ntfy app. Each alert goes to every one.
+const PLACE_ICON = { push: "bell", telegram: "send", email: "mail", ntfy: "phone" };
+const PLACE_KIND = { push: "Browser alerts", telegram: "Telegram", email: "Email", ntfy: "ntfy app" };
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+let pairToken = null;
+let pairTimer = null;
+
+function onPhone() {
+  return matchMedia("(pointer: coarse)").matches && Math.min(innerWidth, screen.width || innerWidth) < 820;
+}
+
+function canPushHere() {
+  return isSecureContext && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window
+    && !(isIOS && !standalone);
+}
+
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  const os = /Android/.test(ua) ? "Android" : isIOS ? (/iPad/.test(ua) ? "iPad" : "iPhone")
+    : /Mac/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "this device";
+  const app = /Edg\//.test(ua) ? "Edge" : /Firefox|FxiOS/.test(ua) ? "Firefox" : /CriOS|Chrome/.test(ua) ? "Chrome"
+    : /Safari/.test(ua) ? "Safari" : "A browser";
+  return isIOS && standalone ? `Whenever on ${os}` : `${app} on ${os}`;
+}
+
+function keyBytes(text) {
+  const raw = atob((text + "=".repeat((4 - (text.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+function setPairHead(title, back) {
+  $("pair-title").textContent = title;
+  $("pair-back").hidden = !back;
+}
+
+function showPair(...nodes) {
+  $("pair-body").replaceChildren(...nodes);
+  $("pair-body").scrollTop = 0;
+}
+
+function stopWaiting() {
+  clearTimeout(pairTimer);
+  pairToken = null;
+}
+
+function openPairing(onDone, kind) {
   pairDone = onDone || null;
-  const body = $("pair-body");
-  body.replaceChildren(element("p", "note", "Getting your private topic"));
-  $("pair").showModal();
+  if (!$("pair").open) $("pair").showModal();
+  if (kind) PAIR_FLOWS[kind]();
+  else showChoices();
+}
+
+function closePairing() {
+  stopWaiting();
+  pairDone = null;
+  if ($("pair").open) $("pair").close();
+}
+
+function finishPairing() {
+  const done = pairDone;
+  closePairing();
+  if (done) done();
+}
+
+function para(text, className = "pair-text") {
+  return element("p", className, text);
+}
+
+function makeQr(url, label) {
+  const qr = element("div", "qr pair-qr");
+  qr.setAttribute("role", "img");
+  qr.setAttribute("aria-label", label || `QR code for ${url}`);
+  loadQr().then((make) => {
+    if (!make) return qr.replaceWith(para("The QR code did not load. Use the link instead.", "note"));
+    const code = make(0, "M");
+    code.addData(url);
+    code.make();
+    qr.innerHTML = code.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+  });
+  return qr;
+}
+
+// The same link, to open, copy or send. A phone opens it in a new tab.
+function linkRow(url, openText) {
+  const row = element("div", "link-row");
+  const open = element("a", "pill-button small ghost", null);
+  open.href = url;
+  open.target = "_blank";
+  open.rel = "noopener";
+  open.append(icon("external"), openText || "Open the link");
+  const copy = button("Copy link", "pill-button small ghost", async (event) => {
+    const b = event.currentTarget;
+    await navigator.clipboard.writeText(url).catch(() => {});
+    b.lastChild.textContent = "Copied";
+  }, "copy");
+  row.append(open, copy);
+  if (navigator.share && onPhone()) {
+    row.append(button("Send", "pill-button small ghost", () => navigator.share({ title: "Whenever", url }).catch(() => {}), "share"));
+  }
+  return row;
+}
+
+function waitingNode(text) {
+  const box = element("p", "pair-wait");
+  box.setAttribute("role", "status");
+  box.append(element("span", "wait-dot"), element("span", null, text));
+  return box;
+}
+
+// The page on the computer asks until the phone, the bot or the email link finishes the pairing.
+function waitForPairing(token, statusNode, again, onDone) {
+  stopWaiting();
+  pairToken = token;
+  const tick = async () => {
+    if (pairToken !== token) return;
+    try {
+      const found = await (await fetch(`/api/pair/${token}`)).json();
+      if (pairToken !== token) return;
+      if (found.done) {
+        stopWaiting();
+        await refreshState();
+        return onDone ? onDone(found) : showPaired(found.place);
+      }
+      if (found.expired) {
+        stopWaiting();
+        statusNode.replaceWith(element("div", "pair-old", null));
+        const old = $("pair-body").querySelector(".pair-old");
+        old.append(para("This link is old now. A link works for 15 minutes."), button("Make a new link", "pill-button small", again, "arrow"));
+        return;
+      }
+    } catch {
+      // A short network gap is not an answer. Ask again.
+    }
+    pairTimer = setTimeout(tick, 1500);
+  };
+  pairTimer = setTimeout(tick, 1200);
+}
+
+function showChoices() {
+  stopWaiting();
+  setPairHead("Where should alerts reach you?", false);
+  const alerts = state?.alerts || { places: [] };
+  const hosted = !!state?.hosted;
+  const count = (kind) => alerts.places.filter((p) => p.kind === kind).length;
+  const options = [
+    { kind: "push", title: hosted ? "Browser alerts" : "This computer",
+      text: hosted ? "No app to install. Chrome on Android, or Safari on iPhone." : "Alerts from this browser, on this computer.",
+      tag: hosted ? "Quickest" : "" },
+    { kind: "telegram", title: "Telegram", text: "Each alert in a chat, with its picture and an Open button.",
+      tag: alerts.telegram_key ? "" : "About 2 minutes" },
+    { kind: "email", title: "Email", text: "A message with the picture. Good for reports and quiet things.",
+      tag: alerts.email_ready ? "" : "Needs a mail server" },
+    { kind: "ntfy", title: "ntfy app", text: "A free app for Android and iPhone that only shows alerts.", tag: "" },
+  ];
+  const list = element("div", "place-choices");
+  for (const o of options) {
+    const choice = button("", "place-choice", () => PAIR_FLOWS[o.kind]());
+    choice.replaceChildren();
+    const badge = element("span", "badge");
+    badge.append(icon(PLACE_ICON[o.kind]));
+    const words = element("span", "place-words");
+    const head = element("b", null, o.title);
+    if (count(o.kind)) head.append(element("span", "state ready", count(o.kind) > 1 ? `${count(o.kind)} on` : "On"));
+    else if (o.tag) head.append(element("span", "state waiting", o.tag));
+    words.append(head, element("small", null, o.text));
+    choice.append(badge, words, icon("arrow"));
+    list.append(choice);
+  }
+  const intro = para(alerts.places.length
+    ? "Add another place. Each alert goes to every place that you pair."
+    : "Pick one. You can add more later. Each alert goes to every place that you pair.");
+  const nodes = [intro, list];
+  if (!hosted) nodes.push(para("A phone cannot open Whenever on this computer. To get browser alerts on a phone, use Whenever online at wheneverwhatever.si.", "note"));
+  showPair(...nodes);
+}
+
+async function subscribeHere(result) {
+  result.replaceChildren(para("Your browser asks once. Choose Allow.", "note"));
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      result.replaceChildren(para(isIOS
+        ? "Alerts are blocked. Open Settings, then Notifications, then Whenever, and allow them."
+        : "Alerts are blocked for this site. Allow notifications in the site settings, next to the address, then try again.", "note error"));
+      return;
+    }
+    const start = await postJson("/api/pair/start", { kind: "push" });
+    const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    await navigator.serviceWorker.ready;
+    const old = await registration.pushManager.getSubscription();
+    if (old) await old.unsubscribe();
+    const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(start.push_key) });
+    const reply = await postJson("/api/push/subscribe", { subscription: subscription.toJSON(), label: deviceLabel() });
+    await refreshState();
+    showPaired({ kind: "push", ...reply.place });
+  } catch (error) {
+    result.replaceChildren(para(error.message || "This browser could not turn on alerts.", "note error"));
+  }
+}
+
+async function pairPush() {
+  setPairHead(state?.hosted ? "Browser alerts" : "This computer", true);
+  showPair(waitingNode("Making a pairing link"));
+  const here = element("div", "pair-result");
+  const hereButton = (text, cls = "pill-button") => button(text, cls, () => subscribeHere(here), "bell");
+  if (!state?.hosted) {
+    if (!canPushHere()) {
+      return showPair(para("This browser cannot show alerts. Open Whenever in Chrome, Edge or Firefox.", "note error"));
+    }
+    return showPair(para("Alerts appear on this computer, also when this tab is in the background."),
+      hereButton("Turn on alerts here"), here,
+      para("For a phone, use Whenever online at wheneverwhatever.si, or pick Telegram, email or the ntfy app.", "note"));
+  }
+  let start;
+  try {
+    start = await postJson("/api/pair/start", { kind: "push" });
+  } catch (error) {
+    return showPair(para(error.message, "note error"));
+  }
+  const status = waitingNode("Waiting for your phone");
+  if (onPhone() && canPushHere()) {
+    const other = element("details", "pair-other");
+    other.append(element("summary", null, "Pair a different phone"),
+      para("Open this link on the other phone, then tap Turn on alerts."), linkRow(start.url, "Open"), status);
+    other.addEventListener("toggle", () => { if (other.open) waitForPairing(start.token, status, pairPush); });
+    return showPair(para("Each alert shows on this phone, with the picture that proves it. You need no app."),
+      hereButton("Turn on alerts", "pill-button big"), here, other);
+  }
+  if (onPhone()) {
+    // An iPhone shows web alerts only for an app on its Home Screen. The link opens a page that shows how.
+    const steps = element("ol", "pair-steps");
+    const one = element("li");
+    const open = element("a", "pill-button", null);
+    open.href = start.url;
+    open.target = "_blank";
+    open.rel = "noopener";
+    open.append(icon("external"), "Open the pairing page");
+    one.append(element("b", null, "Open the pairing page"), para("It opens in a new tab."), open);
+    const two = element("li");
+    two.append(element("b", null, isIOS ? "Add it to your Home Screen" : "Open it in Chrome"),
+      para(isIOS ? "Tap Share, then Add to Home Screen. iPhone needs this for web alerts (iOS 16.4 or later)."
+        : "This browser cannot show alerts. Chrome can."));
+    const three = element("li");
+    three.append(element("b", null, "Tap Turn on alerts"), para(isIOS ? "Open Whenever from your Home Screen first." : "Then tap Allow."));
+    steps.append(one, two, three);
+    waitForPairing(start.token, status, pairPush);
+    return showPair(steps, status);
+  }
+  const grid = element("div", "pair-grid");
+  const words = element("div");
+  const steps = element("ol", "mini-steps");
+  steps.append(element("li", null, "Point your phone's camera at the code."),
+    element("li", null, "Open the link, then tap Turn on alerts."),
+    element("li", null, "Tap Allow. A test alert arrives."));
+  words.append(element("b", "pair-lead", "Scan this with your phone"), steps,
+    para("On iPhone, the page first shows how to add Whenever to the Home Screen.", "note"));
+  grid.append(makeQr(start.url, "QR code that opens the pairing page"), words);
+  const send = element("div", "pair-send");
+  send.append(para("No camera? Send the link to your phone:", "note"), linkRow(start.url));
+  const local = element("div", "pair-alt");
+  if (canPushHere()) local.append(button("Get alerts on this computer instead", "link-button", () => subscribeHere(here)), here);
+  waitForPairing(start.token, status, pairPush);
+  showPair(grid, status, send, local);
+}
+
+function telegramProgress(step) {
+  const bar = element("ol", "pair-progress");
+  ["Make your bot", "Connect your chat"].forEach((name, i) => {
+    const item = element("li", i + 1 < step ? "done" : i + 1 === step ? "now" : "", name);
+    bar.append(item);
+  });
+  return bar;
+}
+
+function botName() {
+  const chars = "abcdefghjkmnpqrstuvwxyz23456789";
+  let tail = "";
+  for (let i = 0; i < 4; i++) tail += chars[Math.floor(Math.random() * chars.length)];
+  return `whenever_${tail}_bot`;
+}
+
+function copyLine(label, value) {
+  const row = element("div", "copy-line");
+  row.append(element("span", null, label), element("code", null, value), button("Copy", "pill-button small ghost", async (event) => {
+    await navigator.clipboard.writeText(value).catch(() => {});
+    event.currentTarget.lastChild.textContent = "Copied";
+  }, "copy"));
+  return row;
+}
+
+// The same two patterns as the server. A pasted line break can vanish, so the second one finds a token
+// that touches the next word: BotFather's tokens have 35 characters after the colon, from AA.
+function findBotTokens(text) {
+  const alone = [...text.matchAll(/(?<![0-9])(\d{5,16}:[A-Za-z0-9_-]{30,60})(?![A-Za-z0-9_-])/g)].map((m) => m[1]);
+  const exact = alone.filter((t) => t.split(":")[1].length === 35);
+  const glued = [...text.matchAll(/(?<![0-9])(\d{5,16}:AA[A-Za-z0-9_-]{33})/g)].map((m) => m[1]);
+  return [...new Set(exact.length ? exact : glued.length ? glued : alone)];
+}
+
+function telegramMakeBot() {
+  stopWaiting();
+  setPairHead("Telegram", true);
+  const father = "https://t.me/BotFather?text=%2Fnewbot";
+  const steps = element("ol", "pair-steps");
+
+  const one = element("li");
+  one.append(element("b", null, "Open BotFather"), para("BotFather is Telegram's own tool for bots. The message /newbot is typed for you: tap Send."));
+  if (onPhone()) {
+    const open = element("a", "pill-button", null);
+    open.href = father;
+    open.target = "_blank";
+    open.rel = "noopener";
+    open.append(icon("send"), "Open BotFather");
+    one.append(open);
+  } else {
+    const row = element("div", "qr-row");
+    const side = element("div");
+    side.append(para("Scan with your phone's camera, or open Telegram on this computer.", "note"), linkRow(father, "Open Telegram"));
+    row.append(makeQr(father, "QR code that opens BotFather in Telegram"), side);
+    one.append(row);
+  }
+
+  const two = element("li");
+  two.append(element("b", null, "Answer its two questions"), para("Copy each answer, paste it in the chat, and send it."),
+    copyLine("Name", "Whenever"), copyLine("Username", botName()),
+    para("If BotFather says that the username is taken, add a number before _bot.", "note"));
+
+  const three = element("li");
+  const form = element("form", "token-form");
+  const field = element("textarea");
+  field.rows = 3;
+  field.placeholder = "Paste BotFather's answer here. The whole message is fine.";
+  field.autocomplete = "off";
+  field.spellcheck = false;
+  field.setAttribute("aria-label", "BotFather's answer, or only the token");
+  const found = element("p", "token-found");
+  found.setAttribute("role", "status");
+  const connect = element("button", "pill-button", "Connect");
+  connect.type = "submit";
+  const result = element("p", "note", "");
+  let tried = "";
+
+  // The page reads the token out of the pasted text, so nobody has to select it exactly.
+  const read = () => {
+    const tokens = findBotTokens(field.value);
+    const name = (field.value.match(/t\.me\/([A-Za-z0-9_]{5,32})/i) || [])[1];
+    found.className = "token-found";
+    result.textContent = "";
+    if (!field.value.trim()) {
+      found.replaceChildren();
+    } else if (tokens.length === 1) {
+      found.classList.add("ok");
+      const masked = `${tokens[0].slice(0, 6)}…${tokens[0].slice(-4)}`;
+      found.replaceChildren(icon("check"), element("span", null, `Found the token${name ? ` for @${name}` : ""}: ${masked}`));
+    } else if (tokens.length > 1) {
+      found.replaceChildren(element("span", null, "This text has more than one token. Paste the answer about your new bot only."));
+    } else {
+      found.replaceChildren(element("span", null, "No token here yet. In BotFather's answer, it is the line under \"Use this token\"."));
+    }
+    connect.disabled = tokens.length !== 1;
+    return tokens;
+  };
+
+  const send = async () => {
+    const tokens = read();
+    if (tokens.length !== 1) return;
+    tried = tokens[0];
+    connect.disabled = true;
+    result.className = "note";
+    result.textContent = "Asking Telegram";
+    try {
+      await postJson("/api/telegram/key", { key: tokens[0] });
+      await refreshState();
+      telegramConnect();
+    } catch (error) {
+      result.className = "note error";
+      result.textContent = error.message;
+      connect.disabled = false;
+    }
+  };
+
+  connect.disabled = true;
+  form.append(field, found, connect);
+  field.addEventListener("input", read);
+  // A paste that holds one new token connects at once. Typing waits for the button.
+  field.addEventListener("paste", () => setTimeout(() => {
+    const tokens = read();
+    if (tokens.length === 1 && tokens[0] !== tried) send();
+  }, 0));
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    send();
+  });
+  three.append(element("b", null, "Paste BotFather's answer here"),
+    para("Copy its whole answer, or only the token. Whenever finds the token by itself."), form, result,
+    para("Whenever keeps the token on its server. Rules and this page cannot read it.", "note"));
+
+  steps.append(one, two, three);
+  showPair(telegramProgress(1), steps);
+}
+
+async function telegramConnect() {
+  setPairHead("Telegram", true);
+  if (!state?.alerts?.telegram_key) return telegramMakeBot();
+  showPair(telegramProgress(2), waitingNode("Making a link to your bot"));
+  let start;
+  try {
+    start = await postJson("/api/pair/start", { kind: "telegram" });
+  } catch (error) {
+    return showPair(telegramProgress(2), para(error.message, "note error"),
+      button("Use a different bot", "pill-button small ghost", telegramMakeBot, "send"));
+  }
+  const name = `@${start.bot.username}`;
+  const status = waitingNode(`Waiting for you to tap Start in ${name}`);
+  const nodes = [telegramProgress(2)];
+  if (onPhone()) {
+    const open = element("a", "pill-button big", null);
+    open.href = start.url;
+    open.target = "_blank";
+    open.rel = "noopener";
+    open.append(icon("send"), `Open ${name}`);
+    nodes.push(para(`Open your bot and tap Start. Then come back here.`), open, status);
+  } else {
+    const grid = element("div", "pair-grid");
+    const words = element("div");
+    const steps = element("ol", "mini-steps");
+    steps.append(element("li", null, "Point your phone's camera at the code."),
+      element("li", null, `Telegram opens ${name}.`), element("li", null, "Tap Start."));
+    words.append(element("b", "pair-lead", "Say hello to your bot"), steps, linkRow(start.url, "Open Telegram on this computer"));
+    grid.append(makeQr(start.url, `QR code that opens ${name} in Telegram`), words);
+    nodes.push(grid, status);
+  }
+  nodes.push(button("Use a different bot", "link-button", telegramMakeBot));
+  waitForPairing(start.token, status, telegramConnect);
+  showPair(...nodes);
+}
+
+function pairEmail() {
+  stopWaiting();
+  setPairHead("Email", true);
+  if (!state?.alerts?.email_ready) {
+    const more = element("details", "pair-other");
+    more.append(element("summary", null, "For the person who runs this server"),
+      para("Add these lines to actions.env. The sender must be verified in Amazon SES.", "note"),
+      element("pre", "code-block", "AWS_SES_ACCESS_KEY_ID=…\nAWS_SES_SECRET_ACCESS_KEY=…\nAWS_SES_REGION=ap-south-1\nWHENEVER_MAIL_FROM=Whenever <alerts@your.domain>"),
+      para("On a Mac, AWS_SES_PROFILE=name can use a profile from ~/.aws in place of the two keys.", "note"));
+    return showPair(para("Email needs a mail server on this Whenever, and this one has none yet. Pick another place for now."), more);
+  }
+  const form = element("form", "email-form");
+  const field = element("input");
+  field.type = "email";
+  field.required = true;
+  field.autocomplete = "email";
+  field.placeholder = "you@example.com";
+  field.setAttribute("aria-label", "Your email address");
+  const send = element("button", "pill-button", "Send the link");
+  send.type = "submit";
+  const result = element("p", "note", "");
+  form.append(field, send);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    send.disabled = true;
+    result.className = "note";
+    result.textContent = "Sending";
+    try {
+      const reply = await postJson("/api/pair/email", { address: field.value });
+      emailSent(field.value, reply.token);
+    } catch (error) {
+      result.className = "note error";
+      result.textContent = error.message;
+      send.disabled = false;
+    }
+  });
+  showPair(para("Whenever sends one message with a button. Alerts start when you tap it, so a typo reaches nobody."),
+    form, result);
+  field.focus();
+}
+
+function emailSent(address, token) {
+  const status = waitingNode("Waiting for you to tap the button in the email");
+  const head = element("div", "pair-check");
+  head.append(icon("mail"), element("b", null, "Check your inbox"));
+  const row = element("div", "pair-result");
+  row.append(button("Use another address", "link-button", pairEmail));
+  waitForPairing(token, status, pairEmail);
+  const where = state?.hosted ? "Open it on any device" : "Open it on this computer, because its button links here";
+  showPair(head, para(`We sent a message to ${address}. ${where}, and tap Yes, send alerts here.`), status,
+    para("Not there after a minute? Look in Spam or Promotions.", "note"), row);
+}
+
+async function pairNtfy() {
+  stopWaiting();
+  setPairHead("ntfy app", true);
+  showPair(waitingNode("Getting your private topic"));
   let topic;
   try {
     topic = (await postJson("/api/phone/topic")).topic;
   } catch (error) {
-    body.replaceChildren(element("p", "note error", error.message));
-    return;
+    return showPair(para(error.message, "note error"));
   }
-  keys.phone = "";
   const link = `https://ntfy.sh/${topic}`;
   const steps = element("ol", "pair-steps");
-
   const one = element("li");
   const apps = element("p", "pair-text");
   const ios = element("a", null, "iPhone");
@@ -1801,71 +2956,85 @@ async function openPairing(onDone) {
   android.target = "_blank";
   apps.append("It is free, and it shows each alert with its picture. Get it for ", ios, " or ", android, ".");
   one.append(element("b", null, "Install the ntfy app"), apps);
-
   const two = element("li");
   two.append(element("b", null, "Follow your private topic"));
-  if (phone.matches) {
-    const open = element("a", "pill-button", "Open in ntfy");
+  if (onPhone()) {
+    const open = element("a", "pill-button", null);
     open.href = link;
-    open.prepend(icon("arrow"));
-    two.append(element("p", "pair-text", "Open it in the app, then tap Subscribe."), open);
+    open.append(icon("external"), "Open in ntfy");
+    two.append(para("Open it in the app, then tap Subscribe."), open);
   } else {
-    two.append(element("p", "pair-text", "On your phone, scan this code with the camera, or add the topic below in the app."));
-    const qr = element("div", "qr pair-qr");
-    qr.setAttribute("role", "img");
-    qr.setAttribute("aria-label", `QR code for ${link}`);
-    two.append(qr);
-    loadQr().then((make) => {
-      if (!make) return qr.remove();
-      const code = make(0, "M");
-      code.addData(link);
-      code.make();
-      qr.innerHTML = code.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
-    });
+    two.append(para("Scan this with your phone's camera, or add the topic below in the app."), makeQr(link));
   }
-  const topicRow = element("div", "topic pair-topic");
-  topicRow.append(element("code", null, topic), button("Copy", "pill-button small ghost", async (event) => {
-    await navigator.clipboard.writeText(topic).catch(() => {});
-    event.currentTarget.textContent = "Copied";
-  }, "copy"));
-  two.append(topicRow);
-
+  two.append(copyLine("Topic", topic));
   const three = element("li");
   const result = element("div", "pair-result");
   const send = button("Send a test alert", "pill-button", async () => {
     send.disabled = true;
-    result.replaceChildren(element("p", "note", "Sending"));
+    result.replaceChildren(para("Sending", "note"));
     try {
-      const reply = await postJson("/api/saved-action/Phone/test", { inputs: { text: "Whenever is paired. Alerts will look like this.", title: "Whenever" } });
-      if (!reply.ok) throw new Error(`ntfy answered ${reply.status}. Try again.`);
+      await postJson("/api/phone/paired", { paired: true });
+      const reply = await postJson("/api/places/ntfy/test");
+      if (!reply.ok) throw new Error(reply.results?.[0]?.detail || "ntfy did not take it. Try again.");
       const yes = button("Yes, it arrived", "pill-button", async () => {
-        await postJson("/api/phone/paired", { paired: true });
-        $("pair").close();
-        flash("Your phone is paired.");
         await refreshState();
-        const done = pairDone;
-        pairDone = null;
-        if (done) done();
+        showPaired({ kind: "ntfy", id: "ntfy", label: "ntfy app" });
       }, "check");
-      const no = button("Not yet", "link-button", () => {
-        result.replaceChildren(element("p", "pair-text",
-          "Check that the app follows exactly this topic, and that notifications are on for ntfy. Then send another test."));
+      const no = button("Not yet", "link-button", async () => {
+        await fetch("/api/places/ntfy", { method: "DELETE" });
+        result.replaceChildren(para("Check that the app follows exactly this topic, and that notifications are on for ntfy. Then send another test."));
         send.disabled = false;
       });
-      result.replaceChildren(element("p", "pair-text", "Did the alert arrive on your phone?"), yes, no);
+      result.replaceChildren(para("Did the alert arrive on your phone?"), yes, no);
     } catch (error) {
-      result.replaceChildren(element("p", "note error", error.message));
+      result.replaceChildren(para(error.message, "note error"));
       send.disabled = false;
     }
   }, "bell");
-  three.append(element("b", null, "Send a test alert"), element("p", "pair-text", "When it arrives, your Whenevers can alert you too."), send, result);
-
+  three.append(element("b", null, "Send a test alert"), para("When it arrives, your Whenevers can alert you too."), send, result);
   steps.append(one, two, three);
-  body.replaceChildren(steps);
+  showPair(steps);
 }
 
-$("pair-close").addEventListener("click", () => { pairDone = null; $("pair").close(); });
-$("pair").addEventListener("click", (event) => { if (event.target === $("pair")) { pairDone = null; $("pair").close(); } });
+function showPaired(place) {
+  stopWaiting();
+  setPairHead("Paired", false);
+  const head = element("div", "pair-done");
+  const mark = element("span", "done-mark");
+  mark.append(icon("check"));
+  head.append(mark, element("h3", null, `Alerts reach ${place?.label || "you"} now`));
+  const text = place?.kind === "email" ? "Each alert arrives as a message, with its picture."
+    : place?.kind === "ntfy" ? "Each alert shows in the ntfy app, with its picture."
+      : "A test alert went there just now. Each alert shows what happened, with the picture that proves it.";
+  const row = element("div", "pair-result");
+  const test = button("Send another test", "pill-button small ghost", async () => {
+    test.disabled = true;
+    try {
+      const reply = await postJson(`/api/places/${encodeURIComponent(place.id)}/test`);
+      flash(reply.ok ? "Sent." : reply.results?.[0]?.detail || "It did not work.");
+    } catch (error) {
+      flash(error.message);
+    } finally {
+      test.disabled = false;
+    }
+  }, "bell");
+  row.append(button("Done", "pill-button", finishPairing, "check"), test, button("Add another place", "link-button", showChoices));
+  showPair(head, para(text), row);
+}
+
+const PAIR_FLOWS = { push: pairPush, telegram: () => telegramConnect(), email: pairEmail, ntfy: pairNtfy };
+
+$("pair-close").addEventListener("click", closePairing);
+$("pair-back").addEventListener("click", showChoices);
+$("pair").addEventListener("click", (event) => { if (event.target === $("pair")) closePairing(); });
+$("pair").addEventListener("close", stopWaiting);
+
+// A tap on a browser alert focuses this page and names the screen to show.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (typeof event.data?.open === "string" && event.data.open.startsWith("#/")) location.hash = event.data.open;
+  });
+}
 
 /* ---------- Actions ---------- */
 
@@ -1882,35 +3051,66 @@ function loadQr() {
   return qrLoading;
 }
 
-async function renderPhoneCard(force) {
-  const key = JSON.stringify([state?.phone_topic || "", !!state?.phone_paired]);
+function sinceText(t) {
+  return t ? `since ${dayName(t)}` : "";
+}
+
+function renderPhoneCard(force) {
+  const places = state?.alerts?.places || [];
+  const key = JSON.stringify(places);
   if (!force && keys.phone === key) return;
   keys.phone = key;
   const card = element("section", "card phone-card");
   card.dataset.hue = "indigo";
-  const paired = !!state?.phone_paired;
-  card.append(element("h2", null, paired ? "Your phone is paired" : "Get alerts on your phone"));
-  card.append(element("p", null, paired
-    ? "Every notification from a Whenever also reaches your phone, with its picture. Tap an alert to open its proof here."
-    : "Pair a phone once, in about a minute. Then any Whenever can alert you, with the picture that proves it."));
-  const row = element("div", "form-row");
-  if (paired) {
-    const test = button("Send a test alert", "pill-button small", async () => {
+  if (!places.length) {
+    card.append(element("h2", null, "Get alerts on your phone"),
+      element("p", null, "Pair once, in about a minute: a browser, Telegram, email or the ntfy app. Then any Whenever can alert you, with the picture that proves it."));
+    const row = element("div", "form-row");
+    row.append(button("Pair your phone", "pill-button", () => openPairing(), "phone"));
+    card.append(row);
+    $("phone-card").replaceChildren(card);
+    return;
+  }
+  card.append(element("h2", null, "Where alerts go"),
+    element("p", null, "Each alert from a Whenever goes to every place here, with its picture."));
+  const list = element("ul", "places");
+  for (const place of places) {
+    const item = element("li", "place");
+    const badge = element("span", "badge");
+    badge.append(icon(PLACE_ICON[place.kind] || "bell"));
+    const words = element("span", "place-words");
+    const kind = PLACE_KIND[place.kind] !== place.label ? PLACE_KIND[place.kind] : "";
+    words.append(element("b", null, place.label), element("small", null, [kind, sinceText(place.t)].filter(Boolean).join(" · ")));
+    const test = button("Test", "pill-button small ghost", async () => {
       test.disabled = true;
       try {
-        const reply = await postJson("/api/saved-action/Phone/test", { inputs: { text: "Test from Whenever.", title: "Whenever" } });
-        flash(reply.ok ? "Sent. Check your phone." : `ntfy answered ${reply.status}.`);
+        const reply = await postJson(`/api/places/${encodeURIComponent(place.id)}/test`);
+        flash(reply.ok ? `Sent to ${place.label}.` : reply.results?.[0]?.detail || "It did not work.");
       } catch (error) {
         flash(error.message);
       } finally {
         test.disabled = false;
       }
     }, "bell");
-    row.append(test, button("Pair another phone", "pill-button small ghost", () => openPairing(), "phone"));
-  } else {
-    row.append(button("Pair your phone", "pill-button", () => openPairing(), "phone"));
+    let armed = false;
+    const remove = button("Remove", "link-button", async () => {
+      if (!armed) {
+        armed = true;
+        remove.textContent = "Tap again to remove";
+        setTimeout(() => { armed = false; remove.textContent = "Remove"; }, 3500);
+        return;
+      }
+      await fetch(`/api/places/${encodeURIComponent(place.id)}`, { method: "DELETE" });
+      refreshState();
+    });
+    const buttons = element("span", "place-buttons");
+    buttons.append(test, remove);
+    item.append(badge, words, buttons);
+    list.append(item);
   }
-  card.append(row);
+  const row = element("div", "form-row");
+  row.append(button("Add a place", "pill-button small", () => openPairing(), "plus"));
+  card.append(list, row);
   $("phone-card").replaceChildren(card);
 }
 
@@ -1946,13 +3146,14 @@ function actionItem({ name, badgeIcon, hue, ready, stateText, lines, buttons = [
 function renderActions() {
   const actions = state?.actions || [];
   const controls = state?.controls || [];
-  const key = JSON.stringify([actions, controls.map((c) => [c.name, c.moves, c.light]), !!state?.phone_paired]);
+  const places = state?.alerts?.places || [];
+  const key = JSON.stringify([actions, controls.map((c) => [c.name, c.moves, c.light]), places.length]);
   if (key === actionsKey) return;
   actionsKey = key;
   const items = [];
   for (const action of actions) {
     const isPhone = action.kind === "phone";
-    const ready = !action.missing.length && (!isPhone || !!state?.phone_paired);
+    const ready = !action.missing.length;
     const buttons = [];
     if (isPhone && !ready) buttons.push(button("Pair", "pill-button small", () => openPairing(), "phone"));
     if (action.kind !== "phone" && ready) {
@@ -1977,8 +3178,10 @@ function renderActions() {
       badgeIcon: action.kind === "phone" ? "phone" : "globe",
       hue: action.kind === "phone" ? "indigo" : "jade",
       ready,
-      stateText: ready ? "Ready" : isPhone ? "Not paired" : `Needs ${action.missing.join(", ")}`,
-      lines: [action.description, `${action.method} to ${action.host}. Inputs: ${inputsText(action)}.`],
+      stateText: isPhone ? (ready ? `${places.length} ${places.length === 1 ? "place" : "places"}` : "Not paired")
+        : ready ? "Ready" : `Needs ${action.missing.join(", ")}`,
+      lines: isPhone ? [action.description, ...(places.length ? [] : ["Pair a phone, Telegram, email or ntfy first."])]
+        : [action.description, `${action.method} to ${action.host}. Inputs: ${inputsText(action)}.`],
       buttons,
     }));
   }
@@ -2078,14 +3281,64 @@ function ruleTile(rule) {
   return index < 0 ? null : { columns, rows, col: index % columns, row: Math.floor(index / columns) };
 }
 
+// The cameras of the chosen Whenever, as places on the wall.
+function focusTiles(rule) {
+  const [columns, rows] = state?.wall || [1, 1];
+  if (!liveCamera || columns * rows <= 1) return [];
+  const names = rule.focus_cameras?.length ? rule.focus_cameras : rule.cameras || [];
+  if (!names.length || names.length >= (state?.cameras || []).length) return [];
+  return names.map((name) => (state?.cameras || []).indexOf(name)).filter((index) => index >= 0)
+    .map((index) => ({ index, name: state.cameras[index], col: index % columns, row: Math.floor(index / columns), columns, rows }));
+}
+
+// Copies the chosen cameras out of the live wall, side by side, while Live shows them.
+let focusDrawing = false;
+function drawFocusView() {
+  if (focusDrawing) return;
+  focusDrawing = true;
+  let last = 0;
+  const step = (now) => {
+    const view = $("focus-view");
+    if (!view || screen !== "live" || !liveCanvas.width) {
+      focusDrawing = false;
+      return;
+    }
+    if (now - last > 60) {
+      last = now;
+      const tiles = JSON.parse(view.dataset.tiles || "[]");
+      const { columns, rows } = tiles[0];
+      const tileW = liveCanvas.width / columns;
+      const tileH = liveCanvas.height / rows;
+      const across = Math.min(2, tiles.length);
+      const width = Math.round(tileW * across);
+      const height = Math.round(tileH * Math.ceil(tiles.length / across));
+      if (view.width !== width || view.height !== height) {
+        view.width = width;
+        view.height = height;
+      }
+      const context = view.getContext("2d");
+      tiles.forEach((tile, i) => {
+        context.drawImage(liveCanvas, tile.col * tileW, tile.row * tileH, tileW, tileH,
+          (i % across) * tileW, Math.floor(i / across) * tileH, tileW, tileH);
+      });
+    }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
 function renderFocus(force) {
   const box = $("focus");
   const spot = $("tile-focus");
   const rule = focusId && rules.find((r) => r.id === focusId);
   const seen = rule && rule.sensors.some((s) => s.on);
-  const key = JSON.stringify(rule ? [rule.id, rule.paused, seen, rule.fired, rule.cameras, state?.wall] : null);
+  const tiles = rule ? focusTiles(rule) : [];
+  const key = JSON.stringify(rule ? [rule.id, rule.paused, seen, rule.fired, rule.today, rule.status, rule.cameras,
+    state?.wall, tiles.map((t) => t.index)] : null);
   if (!force && key === keys.focus) return;
   keys.focus = key;
+  // With a Whenever chosen, Live shows only its cameras, large. The whole wall returns with Show all cameras.
+  document.querySelector('[data-screen="live"]').classList.toggle("focused", tiles.length > 0);
   if (!rule) {
     box.hidden = true;
     spot.hidden = true;
@@ -2095,19 +3348,31 @@ function renderFocus(force) {
   card.dataset.hue = hueOf(rule);
   const top = element("div", "card-top");
   const state_ = element("span", "focus-state" + (seen ? " seen" : ""));
-  state_.append(element("i", "live-dot"), rule.paused ? "Stopped" : seen ? "Seen now" : `Looking · ${watchingText(rule).replace(/^Watching/, "on")}`);
+  state_.append(element("i", "live-dot"), rule.paused ? "Stopped" : seen ? "Seen now"
+    : rule.status?.level === "warn" ? rule.status.text : `Looking · ${watchingText(rule).replace(/^Watching/, "on")}`);
   top.append(state_, toggleSwitch(rule));
-  card.append(top, sentenceNode(rule.sentence || rule.name, "sentence-big focus-sentence"));
+  card.append(top, element("h2", "card-name", rule.name));
   for (const sensor of rule.sensors) card.append(sensorRow(rule, sensor));
   const foot = element("div", "card-foot");
   const open = element("a", null, "Open the Whenever");
   open.href = `#/whenever/${rule.id}`;
   const all = element("a", null, "Show all cameras");
   all.href = "#/live";
-  foot.append(element("span", null, rule.fired ? `Ran ${rule.fired} ${rule.fired === 1 ? "time" : "times"}` : "Not run yet"), open, all);
+  const today = rule.today ?? 0;
+  foot.append(element("span", null, `${today} ${today === 1 ? "time" : "times"} today`), open, all);
   card.append(foot);
-  box.replaceChildren(card);
+  const nodes = [card];
+  if (tiles.length) {
+    const view = document.createElement("canvas");
+    view.id = "focus-view";
+    view.className = "focus-view";
+    view.dataset.tiles = JSON.stringify(tiles);
+    view.setAttribute("aria-label", `Live: ${joinList(tiles.map((t) => t.name))}`);
+    nodes.push(view);
+  }
+  box.replaceChildren(...nodes);
   box.hidden = false;
+  if (tiles.length) drawFocusView();
   rule.sensors.forEach((sensor) => renderSensor(rule.id, sensor.id));
   // The camera it watches stays bright, and the rest of the wall dims.
   const tile = ruleTile(rule);
@@ -2137,6 +3402,539 @@ function renderLiveStrip() {
   }));
 }
 
+// No camera says whether it moves, so Whenever judges it and the person can set it.
+const MAKE_WORDS = { ezviz: "EZVIZ", rtsp: "RTSP camera", video: "Video file" };
+
+// Each camera's own picture, cut from the live wall, so a person knows which camera is which.
+function paintCameraThumbs() {
+  if (!liveCanvas.width) return;
+  const [columns, rows] = state?.wall || [1, 1];
+  const tileW = liveCanvas.width / columns;
+  const tileH = liveCanvas.height / rows;
+  for (const thumb of document.querySelectorAll(".camera-thumb")) {
+    const index = (state?.cameras || []).indexOf(thumb.dataset.camera);
+    if (index < 0) continue;
+    thumb.width = 192;
+    thumb.height = 108;
+    thumb.getContext("2d").drawImage(liveCanvas, (index % columns) * tileW, Math.floor(index / columns) * tileH,
+      tileW, tileH, 0, 0, 192, 108);
+  }
+}
+setInterval(() => { if (screen === "cameras") paintCameraThumbs(); }, 3000);
+
+function renderCameraKinds() {
+  const cameras = state?.camera_kinds || [];
+  const key = JSON.stringify(cameras);
+  if (key === keys.kinds) return;
+  keys.kinds = key;
+  setTimeout(paintCameraThumbs, 50);
+  $("kinds-block").hidden = cameras.length < 1;
+  $("camera-kinds").replaceChildren(...cameras.map((camera) => {
+    const row = element("li", "camera-kind" + (camera.removed ? " removed" : ""));
+    if (camera.removed) {
+      const words = element("span", "place-words");
+      words.append(element("b", null, camera.name), element("small", null, "Removed. Whenever does not watch it."));
+      row.append(words, button("Add back", "pill-button small ghost", async () => {
+        await postJson("/api/cameras/restore", { camera: camera.name }).catch((e) => flash(e.message));
+        flash(camera.name === "Phone camera" ? "Scan a new code with the phone to use it again." : `${camera.name} comes back in a few seconds.`);
+        refreshState();
+      }, "plus"));
+      return row;
+    }
+    const words = element("span", "place-words");
+    const live = element("small", camera.live === false ? "camera-state off" : "camera-state on");
+    live.append(element("i", "live-dot"), camera.live === false ? "Offline" : "Live");
+    words.append(element("b", null, camera.name), live, element("small", null,
+      [MAKE_WORDS[camera.make], camera.why].filter(Boolean).join(" · ")));
+    const thumb = document.createElement("canvas");
+    thumb.className = "camera-thumb";
+    thumb.dataset.camera = camera.name;
+    thumb.setAttribute("aria-hidden", "true");
+    row.append(thumb);
+    const choice = element("div", "segmented small-seg");
+    choice.setAttribute("role", "radiogroup");
+    choice.setAttribute("aria-label", `${camera.name}: fixed or moving`);
+    for (const [kind, label] of [["fixed", "Stays still"], ["moving", "Moves"]]) {
+      const option = button(label, "", async () => {
+        try {
+          await postJson("/api/cameras/kind", { camera: camera.name, kind });
+          refreshState();
+        } catch (error) {
+          flash(error.message);
+        }
+      });
+      option.setAttribute("role", "radio");
+      option.setAttribute("aria-selected", String(camera.kind === kind));
+      option.setAttribute("aria-checked", String(camera.kind === kind));
+      choice.append(option);
+    }
+    let armed = false;
+    const remove = button("Remove", "link-button", async () => {
+      if (!armed) {
+        armed = true;
+        remove.textContent = `Tap again to remove ${camera.name}`;
+        setTimeout(() => { armed = false; remove.textContent = "Remove"; }, 3500);
+        return;
+      }
+      await postJson("/api/cameras/remove", { camera: camera.name }).catch((e) => flash(e.message));
+      flash(`${camera.name} stops in a few seconds.`);
+      refreshState();
+    });
+    row.append(words, choice, remove);
+    if (camera.by === "person") {
+      row.append(button("Let Whenever judge", "link-button", async () => {
+        await postJson("/api/cameras/kind", { camera: camera.name, kind: "auto" }).catch(() => {});
+        refreshState();
+      }));
+    }
+    return row;
+  }));
+}
+
+/* ---------- Cameras ---------- */
+
+// Where the picture comes from. Only one place feeds the camera: security cameras through camera.py
+// win while they run, and otherwise the newest page that chose a camera.
+let deviceList = [];
+let previewTimer = null;
+
+function sourceState() {
+  const owner = state?.owner || {};
+  const count = state?.cameras?.length || 0;
+  if (cameraMode) return { short: "This phone", title: "This phone is the camera", line: "Its picture goes to your Whenevers." };
+  if ((owner.cameras || liveCamera) && state?.cameras?.[0] === "Phone camera") {
+    return { short: "Phone camera", title: "A phone is the camera", line: "Its picture shows here and on Live. Stop it on the phone to use another camera." };
+  }
+  if (owner.cameras || liveCamera) {
+    return { short: count > 1 ? `${count} cameras` : "Security camera", title: count > 1 ? `${count} security cameras` : "A security camera",
+      line: "Every Whenever watches them. To use this laptop or a phone instead, turn them off.", off: true };
+  }
+  if (owner.page && owner.page !== pageId) {
+    return { short: "Another device", title: "Another tab or device has the camera",
+      line: "Only one place can feed the camera at a time. Your Whenevers watch that one now.", take: true };
+  }
+  if (source === "clip") return { short: "Demo clip", title: "Demo clip", line: "On this page: AI-made frames of a person at a desk." };
+  if (source === "device") {
+    const track = video.srcObject?.getVideoTracks?.()[0];
+    return { short: track?.label ? shortLabel(track.label) : "This camera", title: track?.label || "This device's camera",
+      line: track ? "On this page. Keep this page open, so the camera keeps watching." : "Waiting for the browser to allow the camera." };
+  }
+  return { short: "Pick a camera", title: "No camera yet", line: "Pick where the picture comes from." };
+}
+
+function shortLabel(label) {
+  return label.replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, "").slice(0, 28);
+}
+
+function renderSourcePill() {
+  const text = sourceState().short;
+  if ($("source-name").textContent !== text) $("source-name").textContent = text;
+}
+
+function drawPreview() {
+  const canvas = $("source-preview");
+  const from = liveCamera && liveCanvas.width ? liveCanvas : video;
+  const width = from.videoWidth || from.width;
+  const height = from.videoHeight || from.height;
+  if (!width || !height || screen !== "cameras") return;
+  const shown = canvas.clientWidth * devicePixelRatio;
+  if (canvas.width !== Math.round(shown)) {
+    canvas.width = Math.round(shown);
+    canvas.height = Math.round((shown * height) / width);
+  }
+  canvas.getContext("2d").drawImage(from, 0, 0, canvas.width, canvas.height);
+}
+
+function renderSourceChoices() {
+  const owner = state?.owner || {};
+  const fed = !!(owner.cameras || liveCamera);
+  const phoneFeeds = fed && state?.cameras?.[0] === "Phone camera";
+  const here = owner.page === pageId || !owner.page;
+  const options = [
+    { kind: "device", icon: "camera", title: onPhone() ? "This phone" : "This laptop's camera",
+      text: onPhone() ? "Whenever watches through this phone. Keep the page open." : "The webcam of this computer. Your browser asks once.",
+      on: !fed && here && source === "device" },
+    { kind: "phone", icon: "phone", title: "A spare phone", text: "Scan a QR code with any phone, and it becomes the camera. No app to install.",
+      on: phoneFeeds && !cameraMode },
+    { kind: "clip", icon: "play", title: "Demo clip", text: "AI-made frames of a person at a desk, to try Whenever.",
+      on: !fed && here && source === "clip" },
+  ];
+  if (fed && !phoneFeeds) {
+    options.push({ kind: "cameras", icon: "cctv", title: "Security cameras", text: "Connected. Every Whenever watches them.", on: true });
+  }
+  const key = JSON.stringify(options.map((o) => [o.kind, o.on]));
+  if (key === keys.sources) return;
+  keys.sources = key;
+  $("source-choices").replaceChildren(...options.map((o) => {
+    if (fed && !o.on && o.kind !== "phone") o.tag = phoneFeeds ? "Stop the phone first" : "Turn the cameras off first";
+    const choice = button("", "place-choice", () => {
+      if (o.kind === "cameras") return;
+      if (o.kind === "phone") return openPhoneCamera();
+      if (fed) return flash(phoneFeeds ? "A phone is the camera now. Stop it on the phone, then pick this."
+        : "Your security cameras are on. Turn them off at the top of this screen, then pick this.");
+      chooseSource(o.kind, true);
+      keys.sources = "";
+      setTimeout(() => renderCamerasScreen(true), 400);
+    });
+    choice.replaceChildren();
+    choice.setAttribute("aria-pressed", String(o.on));
+    const badge = element("span", "badge");
+    badge.append(icon(o.icon));
+    const words = element("span", "place-words");
+    const head = element("b", null, o.title);
+    if (o.on) head.append(element("span", "state ready", "On now"));
+    else if (o.tag) head.append(element("span", "state waiting", o.tag));
+    words.append(head, element("small", null, o.text));
+    choice.append(badge, words, icon("arrow"));
+    return choice;
+  }));
+}
+
+// Makes whose cameras need something that Whenever cannot get today: a maker's developer key, a review,
+// a partner approval, or a small app at home. They show as Coming soon, with the reason.
+const COMING = [
+  { name: "EZVIZ", make: "ezviz", why: "Needs EZVIZ's developer key" },
+  { name: "Imou", why: "Needs Imou's developer key" },
+  { name: "Google Nest", why: "Needs Google's review" },
+  { name: "Ring", why: "Needs Ring's partner approval" },
+  { name: "CP Plus", why: "Needs a video entry on our server" },
+  { name: "Dahua", why: "Needs a video entry on our server" },
+  { name: "Amcrest", why: "Needs a video entry on our server" },
+  { name: "Hikvision", why: "Needs Hikvision's platform access" },
+  { name: "TP-Link Tapo", why: "Needs the Whenever home app" },
+  { name: "Reolink", why: "Needs the Whenever home app" },
+  { name: "UniFi Protect", why: "Needs the Whenever home app" },
+  { name: "Arlo", why: "No official way in yet" },
+  { name: "Wyze", why: "No official way in yet" },
+  { name: "Eufy", why: "No official way in yet" },
+  { name: "Xiaomi", why: "No official way in yet" },
+];
+
+// Makes that are connected come first, as connected. EZVIZ is Hikvision's home brand, so it covers both.
+function renderComing() {
+  const counts = {};
+  for (const camera of state?.camera_kinds || []) if (!camera.removed && camera.make) counts[camera.make] = (counts[camera.make] || 0) + 1;
+  const key = JSON.stringify(counts);
+  if (keys.coming === key) return;
+  keys.coming = key;
+  const connected = COMING.filter((make) => counts[make.make]);
+  const rest = COMING.filter((make) => !counts[make.make] && !(make.name === "Hikvision" && counts.ezviz));
+  $("coming-grid").replaceChildren(...[...connected, ...rest].map((make) => {
+    const tile = element("li", "coming-tile" + (counts[make.make] ? " connected" : ""));
+    const count = counts[make.make];
+    tile.append(element("b", "wordmark", make.name === "EZVIZ" && count ? "EZVIZ (Hikvision)" : make.name),
+      element("span", count ? "state ready" : "state waiting",
+        count ? `Connected · ${count} ${count === 1 ? "camera" : "cameras"}` : "Coming soon"));
+    return tile;
+  }));
+}
+
+// A spare phone becomes the camera: it scans the code, logs in, and opens camera mode.
+async function openPhoneCamera() {
+  if (onPhone()) {
+    location.hash = "#/phone-camera";
+    return;
+  }
+  pairDone = null;
+  if (!$("pair").open) $("pair").showModal();
+  setPairHead("Use a phone as the camera", false);
+  if (!state?.hosted) {
+    return showPair(para("A phone cannot reach Whenever on this computer. Open Whenever online at wheneverwhatever.si, and pick A spare phone there."),
+      para("On the phone itself, you can also open Whenever and pick This phone.", "note"));
+  }
+  showPair(waitingNode("Making a link for your phone"));
+  let start;
+  try {
+    start = await postJson("/api/pair/start", { kind: "camera" });
+  } catch (error) {
+    return showPair(para(error.message, "note error"));
+  }
+  const grid = element("div", "pair-grid");
+  const words = element("div");
+  const steps = element("ol", "mini-steps");
+  steps.append(element("li", null, "Point the phone's camera at the code."),
+    element("li", null, "Open the link, and allow the camera."),
+    element("li", null, "Lean the phone where it sees the place, and plug it in."));
+  words.append(element("b", "pair-lead", "Scan this with the phone"), steps,
+    para("The phone's back camera watches. It needs no app, and the page keeps the screen on.", "note"));
+  grid.append(makeQr(start.url, "QR code that turns a phone into the camera"), words);
+  const status = waitingNode("Waiting for the phone");
+  const send = element("div", "pair-send");
+  send.append(para("No camera on hand? Send the link to the phone:", "note"), linkRow(start.url));
+  waitForPairing(start.token, status, openPhoneCamera, () => {
+    setPairHead("The phone is the camera", false);
+    const head = element("div", "pair-done");
+    const mark = element("span", "done-mark");
+    mark.append(icon("check"));
+    head.append(mark, element("h3", null, "Your phone is the camera now"));
+    const row = element("div", "pair-result");
+    row.append(button("See it live", "pill-button", () => { closePairing(); location.hash = "#/live"; }, "live"),
+      button("Done", "link-button", closePairing));
+    showPair(head, para("Its picture shows on Live in a few seconds. Every Whenever watches through it until you press Stop on the phone."), row);
+  });
+  showPair(grid, status, send);
+}
+
+/* ---------- Camera mode: this phone is the camera ---------- */
+
+let wakeLock = null;
+let liveUpload = null;
+let liveSending = false;
+
+async function keepAwake() {
+  try {
+    wakeLock = await navigator.wakeLock?.request("screen");
+  } catch {
+    wakeLock = null;
+  }
+}
+
+function sendLivePicture() {
+  if (!cameraMode || liveSending || !video.videoWidth || document.hidden) return;
+  liveSending = true;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.min(960, video.videoWidth);
+  canvas.height = Math.round((canvas.width * video.videoHeight) / video.videoWidth);
+  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+  canvas.toBlob(async (blob) => {
+    try {
+      if (blob) await fetch("/api/live", { method: "POST", headers: { "Content-Type": "image/jpeg", "X-Page": pageId }, body: blob });
+    } catch {
+      // The next picture tries again.
+    } finally {
+      liveSending = false;
+    }
+  }, "image/jpeg", 0.72);
+}
+
+async function claimAsCamera() {
+  await fetch("/api/claim", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ page: pageId, cameras: ["Phone camera"] }) });
+}
+
+async function enterCameraMode() {
+  if (cameraMode) return;
+  cameraMode = true;
+  document.body.classList.add("camera-mode");
+  if (!pageId.startsWith("camera-")) pageId = `camera-${pageId}`.slice(0, 40);
+  liveCamera = false;
+  inactive = false;
+  source = "device";
+  try { localStorage.setItem("whenever-source", "device"); } catch {}
+  $("camera-mode-bar").hidden = false;
+  await startVideo("device");
+  await claimAsCamera();
+  keepAwake();
+  clearInterval(liveUpload);
+  liveUpload = setInterval(sendLivePicture, 500);
+  $("camera-mode-note").textContent = navigator.wakeLock
+    ? "Keep this page open and the phone plugged in. The screen stays on."
+    : "Keep this page open and the phone plugged in. Turn off auto-lock in the phone's settings.";
+}
+
+function leaveCameraMode() {
+  cameraMode = false;
+  document.body.classList.remove("camera-mode");
+  clearInterval(liveUpload);
+  wakeLock?.release?.().catch(() => {});
+  wakeLock = null;
+  $("camera-mode-bar").hidden = true;
+}
+
+$("camera-stop").addEventListener("click", () => {
+  if (video.srcObject) video.srcObject.getTracks().forEach((track) => track.stop());
+  video.srcObject = null;
+  source = null;
+  try { localStorage.removeItem("whenever-source"); } catch {}
+  location.hash = "#/cameras";
+});
+$("camera-flip").addEventListener("click", async () => {
+  let facing = "environment";
+  try {
+    facing = localStorage.getItem("whenever-facing") === "user" ? "environment" : "user";
+    localStorage.setItem("whenever-facing", facing);
+    localStorage.removeItem("whenever-device");
+  } catch {}
+  await startVideo("device");
+});
+document.addEventListener("visibilitychange", () => {
+  if (cameraMode && !document.hidden) {
+    keepAwake();
+    claimAsCamera();
+  }
+});
+
+async function renderDevicePicker() {
+  const box = $("device-picker");
+  const live = video.srcObject?.getVideoTracks?.()[0];
+  if (source !== "device" || liveCamera || !live || !navigator.mediaDevices?.enumerateDevices) {
+    box.hidden = true;
+    return;
+  }
+  deviceList = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+  const current = live.getSettings().deviceId;
+  const key = JSON.stringify([deviceList.map((d) => [d.deviceId, d.label]), current]);
+  if (key === keys.devices) return;
+  keys.devices = key;
+  box.hidden = deviceList.length < 2;
+  const chips = element("div", "chips");
+  for (const [index, device] of deviceList.entries()) {
+    const chip = button(shortLabel(device.label) || `Camera ${index + 1}`, "chip", async () => {
+      try { localStorage.setItem("whenever-device", device.deviceId); } catch {}
+      keys.devices = "";
+      await startVideo("device");
+    }, "camera");
+    chip.setAttribute("aria-pressed", String(device.deviceId === current));
+    chips.append(chip);
+  }
+  box.replaceChildren(element("b", "point-label", "Which camera of this device"), chips);
+}
+
+function renderCamerasScreen(force) {
+  const now = sourceState();
+  $("source-title").textContent = now.title;
+  $("source-line").textContent = now.line;
+  const action = $("source-action");
+  const removed = state?.removed_cameras || [];
+  const want = now.take ? "take" : now.off ? "off" : removed.length > 1 ? "back" : "";
+  if (force || action.dataset.want !== want) {
+    action.dataset.want = want;
+    const buttons = [];
+    if (now.take) {
+      buttons.push(button("Use it here", "pill-button small", async () => {
+        await takeCamera();
+        if (source) startVideo(source);
+        renderCamerasScreen(true);
+      }, "camera"));
+    } else if (now.off) {
+      buttons.push(button("Turn off the security cameras", "pill-button small ghost", async () => {
+        for (const name of state?.cameras || []) await postJson("/api/cameras/remove", { camera: name }).catch(() => {});
+        flash("The security cameras stop in a few seconds. Then pick this laptop or a phone.");
+        refreshState();
+      }, "x"));
+    } else if (removed.length > 1) {
+      buttons.push(button("Turn the security cameras back on", "pill-button small ghost", async () => {
+        for (const name of removed) await postJson("/api/cameras/restore", { camera: name }).catch(() => {});
+        flash("The security cameras come back in a few seconds.");
+        refreshState();
+      }, "cctv"));
+    }
+    action.replaceChildren(...buttons);
+  }
+  if (force) keys.sources = "";
+  renderSourceChoices();
+  renderDevicePicker();
+  renderComing();
+  renderCameraGuide();
+  clearInterval(previewTimer);
+  previewTimer = setInterval(() => {
+    if (screen !== "cameras") return clearInterval(previewTimer);
+    drawPreview();
+  }, 250);
+  drawPreview();
+}
+
+// How to connect each make of camera. Passwords go only into camera.env on the computer at home.
+const CAMERA_GUIDES = [
+  { name: "Hikvision", also: "HiLook, Prama", steps: [
+    "Find the camera's IP address in the Hik-Connect app, or on the recorder's screen.",
+    "Use the camera's admin user and the password that you set when you activated it. RTSP is on already.",
+    "For a recorder (NVR), add the channel number after the address. Add ?sub for the smaller stream." ],
+  lines: ["hikvision://admin:PASSWORD@192.168.1.64 Front door", "hikvision://admin:PASSWORD@192.168.1.10/3 Gate"] },
+  { name: "EZVIZ", also: "Hikvision's home brand", steps: [
+    "With local RTSP: in the EZVIZ app, open Settings, LAN Live View, scan, pick the camera, then the gear, Local Server Settings, and turn on RTSP. Not every model has this switch.",
+    "The user is admin, and the password is the verification code on the camera's label.",
+    "With no local RTSP: use ezviz:SERIAL, which reads the camera through EZVIZ's cloud. It needs a one-time login, described in the README. The demo's cameras connect this way." ],
+  lines: ["ezviz-local://admin:VERIFICATIONCODE@192.168.1.30 Garden", "ezviz:SERIALNUMBER Garden"] },
+  { name: "CP Plus, Dahua and Amcrest", also: "Imou, Lorex", steps: [
+    "Use the admin password of the camera or the recorder. A new camera asks you to set it on first use.",
+    "Imou: turn on RTSP in the Imou app first, and use the safety code on the camera's label as the password.",
+    "For a recorder, add the channel number after the address. Add ?sub for the smaller stream." ],
+  lines: ["cpplus://admin:PASSWORD@192.168.1.108 Shop floor", "dahua://admin:PASSWORD@192.168.1.10/2 Counter"] },
+  { name: "TP-Link Tapo", also: "", steps: [
+    "In the Tapo app, open the camera, then Settings, Advanced Settings, Camera Account. Make a user and a password of 6 to 32 characters. This is not your Tapo login.",
+    "Battery models and some others, such as the C410, C420, C425 and D230, have no RTSP. Use a bridge for those.",
+    "Tapo also speaks ONVIF on port 2020." ],
+  lines: ["tapo://CAMERAUSER:CAMERAPASSWORD@192.168.1.40 Hall", "onvif://CAMERAUSER:CAMERAPASSWORD@192.168.1.40:2020 Hall"] },
+  { name: "Reolink", also: "", steps: [
+    "In the Reolink app or client, check that RTSP is on: Settings, Network, Advanced, Port Settings. Some models have it off.",
+    "Use the admin password. For cameras on a Reolink recorder, use the recorder's address, its login, and the channel number.",
+    "Whenever tries both stream paths that Reolink uses, so new and old firmware both work." ],
+  lines: ["reolink://admin:PASSWORD@192.168.1.20 Porch", "reolink://admin:PASSWORD@192.168.1.5/4 Back gate"] },
+  { name: "UniFi Protect", also: "Ubiquiti", steps: [
+    "In Protect, open the camera, then Settings, Advanced, and turn on an RTSPS stream, such as High. Copy the address that appears.",
+    "Change rtsps to rtsp and the port 7441 to 7447, and delete ?enableSrtp at the end." ],
+  lines: ["rtsp://192.168.1.1:7447/ABCDEF123456 Driveway"] },
+  { name: "Eufy", also: "", steps: [
+    "Wired indoor cameras and some SoloCam models: in the Eufy Security app, open the camera, then Settings, Storage, NAS (RTSP), and turn it on. Copy the address that the app shows.",
+    "Battery EufyCam models have no RTSP. Use a bridge for those." ],
+  lines: ["rtsp://USER:PASSWORD@192.168.1.50/live0 Baby room"] },
+  { name: "Axis", also: "", steps: ["Use a camera user with viewer rights."], lines: ["axis://root:PASSWORD@192.168.1.90 Entrance"] },
+  { name: "Any ONVIF camera", also: "Most IP cameras", steps: [
+    "Turn on ONVIF in the camera's app or web page. Some makes need a separate ONVIF user.",
+    "Run python3 camera.py --find. It lists each camera that answers, with a line to copy.",
+    "Whenever asks the camera for its stream, so you do not need its stream path." ],
+  lines: ["onvif://USER:PASSWORD@192.168.1.70 Back yard"] },
+  { name: "Any RTSP camera or recorder", also: "", steps: [
+    "The camera's manual or its web page names the stream path. Port 554 is the usual one." ],
+  lines: ["rtsp://USER:PASSWORD@192.168.1.80:554/stream1 Store room"] },
+  { name: "A picture address", also: "MJPEG, JPEG snapshots, Home Assistant, Frigate, go2rtc", steps: [
+    "An address that streams MJPEG works as it is.",
+    "An address that gives one JPEG at a time starts with snapshot:. Whenever reads it eight times a second." ],
+  lines: ["http://192.168.1.60/video.mjpg Workshop", "snapshot:http://USER:PASSWORD@192.168.1.61/snapshot.jpg Shed"] },
+  { name: "Cameras with no local stream", also: "Ring, Google Nest, Arlo, Blink, Wyze, most Xiaomi and Qubo", steps: [
+    "These send video only to their own cloud. A bridge program at home turns it into a stream: go2rtc (Ring, Nest and more), docker-wyze-bridge (Wyze), Scrypted, or Home Assistant.",
+    "Use the rtsp:// address that the bridge shows. Some Xiaomi models can turn on ONVIF in Mi Home, under advanced settings. Aqara's G2H and G3 have RTSP." ],
+  lines: ["rtsp://192.168.1.2:8554/front_doorbell Doorbell"] },
+];
+
+function copyCode(text) {
+  const row = element("div", "copy-line");
+  row.append(element("code", null, text), button("Copy", "pill-button small ghost", async (event) => {
+    const b = event.currentTarget;
+    await navigator.clipboard.writeText(text).catch(() => {});
+    b.lastChild.textContent = "Copied";
+  }, "copy"));
+  return row;
+}
+
+function renderCameraGuide() {
+  const key = JSON.stringify([!!state?.hosted, location.host]);
+  if (key === keys.guide) return;
+  keys.guide = key;
+  const server = state?.hosted ? `https://${location.host}` : location.origin;
+  const steps = element("ol", "pair-steps guide-steps");
+  const step = (title, text, ...extra) => {
+    const item = element("li");
+    item.append(element("b", null, title), element("p", "pair-text", text), ...extra);
+    steps.append(item);
+  };
+  step("Run one command", "On a Mac or a Linux computer that stays on, on the same Wi-Fi as your cameras. It gets what it needs, finds your cameras, asks for each camera's password, tests it, and starts sending.",
+    copyCode(`curl -fsSL ${server}/connect.sh | sh`));
+  step("Answer its questions", "The access code that you use to log in, then a password for each camera. The passwords stay on that computer: only pictures leave it.");
+  step("Watch them arrive", "This screen says Connected when the cameras come in. To start it again later:",
+    copyCode("cd ~/whenever-cameras && .venv/bin/python camera.py"));
+
+  const makes = element("div", "guide-makes");
+  for (const guide of CAMERA_GUIDES) {
+    const item = element("details", "guide-make");
+    const summary = element("summary");
+    const words = element("span", "place-words");
+    words.append(element("b", null, guide.name), ...(guide.also ? [element("small", null, guide.also)] : []));
+    summary.append(words);
+    const body = element("div", "guide-body");
+    const list = element("ol", "mini-steps");
+    list.append(...guide.steps.map((text) => element("li", null, text)));
+    body.append(list, element("b", "point-label", guide.lines.length > 1 ? "Lines for camera.env" : "Line for camera.env"),
+      ...guide.lines.map(copyCode));
+    item.append(summary, body);
+    makes.append(item);
+  }
+  const more = element("details", "guide-more");
+  more.append(element("summary", null, "What to switch on in each make of camera"), makes);
+  $("camera-guide").replaceChildren(steps, more);
+}
+
 /* ---------- State ---------- */
 
 async function refreshState() {
@@ -2152,7 +3950,13 @@ async function refreshState() {
   stopped = state.stopped;
   captureFps = state.capture_fps;
   holdCapture = state.hold_capture;
-  if (state.live_camera && !liveCamera) showLiveCamera();
+  // The person removed this phone in Whenever, so it stops being the camera.
+  if (cameraMode && (state.removed_cameras || []).includes("Phone camera")) {
+    $("camera-stop").click();
+    flash("This phone was removed in Whenever, so it stopped.");
+  }
+  // A phone in camera mode sends the live picture itself, so it never switches to watching it.
+  if (state.live_camera && !liveCamera && !cameraMode) showLiveCamera();
   if (liveCamera) {
     liveLost = !state.live_camera;
     setStatus(liveLost ? "The camera stream stopped" : liveLabel(state), liveLost ? "warn" : "live");
@@ -2169,11 +3973,15 @@ async function refreshState() {
   }
   renderActions();
   renderLiveStrip();
+  renderCameraKinds();
+  renderSourcePill();
+  if (screen === "cameras") renderCamerasScreen();
   if (screen === "live") renderFocus();
   if (screen === "whenevers") renderList();
   if (screen === "whenever") renderDetail(location.hash.split("/")[2]);
   if (screen === "create") renderCreate();
   if (screen === "actions") renderPhoneCard();
+  if (ASK_SCREENS.has(screen) && document.activeElement !== $("ask-input")) renderAskBar();
   handleResults(state.results);
   for (const item of state.feed) {
     lastFeed = item.id;
@@ -2182,12 +3990,13 @@ async function refreshState() {
     } else if (item.kind === "draw") {
       // After a reload, old draws stay in the list and do not freeze the view.
       if (!firstState) showDraw(item);
-    } else if ((item.kind === "notify" || item.kind === "say") && !firstState) {
+    } else if (item.kind === "alert" && !firstState) {
+      showAlertCard(item);
+    } else if (item.kind === "say" && !firstState) {
       flash(`${item.rule}: ${item.text}`);
-    } else if (item.kind === "error" && !firstState) {
-      flash(`${item.rule}: ${item.text.slice(0, 140)}`);
     }
   }
+  problemSignals();
   if (stopped) setStatus("Stopped at the spend limit", "warn");
   if (firstState) {
     firstState = false;
@@ -2214,7 +4023,6 @@ function handleResults(results) {
   const seen = results.filter((r) => !r.skipped);
   if (seen.length) drawBoxes(seen);
   for (const r of results) {
-    if (r.error) flash(r.error);
     if (r.skipped) continue;
     record(r);
     renderSensor(r.rule, r.sensor);
@@ -2379,6 +4187,7 @@ async function recordExample() {
 
 function liveLabel(s) {
   const count = s.cameras?.length || 1;
+  if (s.cameras?.[0] === "Phone camera") return "Live: phone camera";
   return count > 1 ? `Live: ${count} cameras` : "Live: security camera";
 }
 
@@ -2392,26 +4201,183 @@ async function showLiveCamera() {
   setStatus("Live: security camera", "live");
   const context = liveCanvas.getContext("2d");
   let started = false;
-  for (;;) {
+  const draw = async (blob) => {
+    const picture = await createImageBitmap(blob);
+    if (liveCanvas.width !== picture.width) {
+      liveCanvas.width = picture.width;
+      liveCanvas.height = picture.height;
+    }
+    context.drawImage(picture, 0, 0);
+    picture.close();
+    if (!started) {
+      started = true;
+      video.srcObject = liveCanvas.captureStream();
+    }
+  };
+  while (liveCamera) {
     try {
+      // Best: the browser plays each camera from the media server, so the server decodes nothing.
+      if (await playStreams()) continue;
+      // One open stream sends each picture as soon as it exists. Asking for each one waits a round trip.
+      if (await readLiveStream(draw)) continue;
       const response = await fetch(`/api/live.jpg?after=${liveSeq}`);
       if (response.status !== 200) continue;
       liveSeq = Number(response.headers.get("X-Seq"));
-      const picture = await createImageBitmap(await response.blob());
-      if (liveCanvas.width !== picture.width) {
-        liveCanvas.width = picture.width;
-        liveCanvas.height = picture.height;
-      }
-      context.drawImage(picture, 0, 0);
-      picture.close();
-      if (!started) {
-        started = true;
-        video.srcObject = liveCanvas.captureStream();
-      }
+      await draw(await response.blob());
     } catch (error) {
       await wait(1000);
     }
   }
+}
+
+// The media server relays each camera as it is. This page plays them with its own hardware decoder and
+// draws them into the wall, so pointing, outlines and recording work as before. HLS needs hls.js outside Safari.
+let hlsLoading = null;
+let streamsFailed = false;
+
+function loadHls() {
+  hlsLoading ??= new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js";
+    script.onload = () => resolve(window.Hls);
+    script.onerror = () => resolve(null);
+    document.head.append(script);
+  });
+  return hlsLoading;
+}
+
+async function playStreams() {
+  const names = state?.cameras || [];
+  const streams = state?.streams || {};
+  if (streamsFailed || !names.length || !names.every((name) => streams[name])) return false;
+  // hls.js tolerates the uneven timing of some cameras better than Safari's own player, so it comes first.
+  const Hls = await loadHls();
+  const native = !(Hls && Hls.isSupported()) && !!document.createElement("video").canPlayType("application/vnd.apple.mpegurl");
+  if (!native && !(Hls && Hls.isSupported())) {
+    streamsFailed = true;
+    return false;
+  }
+  const box = $("stream-box");
+  let failed = false;
+  const players = names.map((name) => {
+    const player = document.createElement("video");
+    player.muted = true;
+    player.playsInline = true;
+    player.autoplay = true;
+    box.append(player);
+    const url = `/hls/${streams[name]}/index.m3u8`;
+    let hls = null;
+    if (native) {
+      player.src = url;
+      player.addEventListener("error", () => { failed = true; });
+    } else {
+      hls = new Hls({ lowLatencyMode: true, liveSyncDurationCount: 2, backBufferLength: 10 });
+      hls.on(Hls.Events.ERROR, (event, data) => { if (data.fatal) failed = true; });
+      hls.loadSource(url);
+      hls.attachMedia(player);
+    }
+    player.play().catch(() => {});
+    return { name, player, hls };
+  });
+  const [columns, rows] = state?.wall || [1, 1];
+  const tileW = Math.round(1920 / columns);
+  const tileH = Math.round((tileW * 9) / 16);
+  const context = liveCanvas.getContext("2d");
+  const key = JSON.stringify([names, streams, state?.wall]);
+  let started = false;
+  const until = performance.now() + 20000;
+  try {
+    while (liveCamera && !failed && JSON.stringify([state?.cameras, state?.streams, state?.wall]) === key) {
+      if (liveCanvas.width !== tileW * columns || liveCanvas.height !== tileH * rows) {
+        liveCanvas.width = tileW * columns;
+        liveCanvas.height = tileH * rows;
+      }
+      let drawn = 0;
+      players.forEach(({ name, player }, index) => {
+        if (player.readyState < 2) return;
+        const x = (index % columns) * tileW;
+        const y = Math.floor(index / columns) * tileH;
+        context.drawImage(player, x, y, tileW, tileH);
+        if (names.length > 1) {
+          context.font = `${Math.max(14, Math.round(tileH / 18))}px sans-serif`;
+          const width = context.measureText(name).width;
+          context.fillStyle = "#000";
+          context.fillRect(x, y, width + 14, Math.round(tileH / 18) + 12);
+          context.fillStyle = "#ffdc3c";
+          context.fillText(name, x + 6, y + Math.round(tileH / 18) + 4);
+        }
+        drawn++;
+      });
+      if (drawn && !started) {
+        started = true;
+        video.srcObject = liveCanvas.captureStream();
+        setStatus(liveLabel(state), "live");
+      }
+      if (!started && performance.now() > until) failed = true;
+      await wait(66);
+    }
+  } finally {
+    for (const { player, hls } of players) {
+      hls?.destroy();
+      player.removeAttribute("src");
+      player.load();
+      player.remove();
+    }
+  }
+  // A browser that cannot play these streams, such as Firefox with H.265, watches the live wall instead.
+  if (failed) streamsFailed = true;
+  return !failed;
+}
+
+const FRAME_HEAD = new TextEncoder().encode("\r\n\r\n");
+
+function findBytes(haystack, needle, from = 0) {
+  outer: for (let i = from; i <= haystack.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (haystack[i + j] !== needle[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+
+// Reads multipart pictures from /api/live.mjpg and draws only the newest. Returns false if streams fail here.
+let liveStreamWorks = true;
+async function readLiveStream(draw) {
+  if (!liveStreamWorks || !window.ReadableStream) return false;
+  const response = await fetch("/api/live.mjpg");
+  if (!response.ok || !response.body) {
+    liveStreamWorks = false;
+    return false;
+  }
+  const reader = response.body.getReader();
+  let buffer = new Uint8Array(0);
+  let got = 0;
+  while (liveCamera) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const joined = new Uint8Array(buffer.length + value.length);
+    joined.set(buffer);
+    joined.set(value, buffer.length);
+    buffer = joined;
+    let newest = null;
+    for (;;) {
+      const head = findBytes(buffer, FRAME_HEAD);
+      if (head < 0) break;
+      const text = new TextDecoder().decode(buffer.subarray(0, head));
+      const size = Number((text.match(/Content-Length: (\d+)/i) || [])[1]);
+      if (!size || buffer.length < head + 4 + size) break;
+      newest = buffer.slice(head + 4, head + 4 + size);
+      const seq = Number((text.match(/X-Seq: (\d+)/i) || [])[1]);
+      if (seq) liveSeq = seq;
+      buffer = buffer.slice(head + 4 + size);
+    }
+    if (newest) {
+      got++;
+      await draw(new Blob([newest], { type: "image/jpeg" }));
+    }
+  }
+  reader.cancel().catch(() => {});
+  if (!got) liveStreamWorks = false;
+  return got > 0;
 }
 
 async function startVideo(kind) {
@@ -2425,30 +4391,53 @@ async function startVideo(kind) {
   }
   if (liveCamera) return;
   try {
+    // A phone watches with its back camera unless the person picked another one under Cameras.
+    let chosen = null;
+    let facing = "environment";
+    try {
+      chosen = localStorage.getItem("whenever-device");
+      facing = localStorage.getItem("whenever-facing") || facing;
+    } catch {}
+    const size = { width: { ideal: 1280 }, height: { ideal: 720 } };
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+      video: chosen ? { ...size, deviceId: { exact: chosen } } : { ...size, facingMode: { ideal: facing } },
       audio: false,
-    });
+    }).catch(() => navigator.mediaDevices.getUserMedia({ video: size, audio: false }));
     // A security camera can start while the browser asks for this one.
     if (liveCamera) {
       stream.getTracks().forEach((track) => track.stop());
       return;
     }
+    if (video.srcObject) video.srcObject.getTracks().forEach((track) => track.stop());
     video.removeAttribute("src");
     video.srcObject = stream;
-    $("frame").classList.add("mirror");
+    // A camera that faces the person shows like a mirror. A back camera shows the world as it is.
+    const faces = stream.getVideoTracks()[0]?.getSettings().facingMode;
+    $("frame").classList.toggle("mirror", faces !== "environment");
     $("notice").hidden = true;
+    if (screen === "cameras") renderCamerasScreen(true);
   } catch (error) {
     setStatus("No camera", "warn");
-    showNotice('This page cannot use the camera. Allow camera access and reload, or <a href="#/start">choose the demo clip</a>.');
+    showNotice('This page cannot use the camera. Allow camera access and reload, or <a href="#/cameras">pick another camera</a>.');
   }
 }
 
-function chooseSource(kind) {
+function chooseSource(kind, stay) {
   source = kind;
   try { localStorage.setItem("whenever-source", kind); } catch {}
+  // A phone that was the camera has stopped, so this page can feed the camera again.
+  if (liveCamera && !state?.owner?.cameras) liveCamera = false;
+  // Only one page feeds the camera. Choosing here takes it back from another tab.
+  if (state?.owner?.page && state.owner.page !== pageId && !state.owner.cameras) takeCamera();
   startVideo(kind);
-  location.hash = rules.length ? "#/whenevers" : "#/create";
+  if (!stay) location.hash = rules.length ? "#/whenevers" : "#/create";
+}
+
+async function takeCamera() {
+  await fetch("/api/claim", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ page: pageId }) });
+  inactive = false;
+  $("notice").hidden = true;
+  await refreshState();
 }
 
 document.querySelectorAll("[data-source]").forEach((b) => b.addEventListener("click", () => chooseSource(b.dataset.source)));
@@ -2483,19 +4472,385 @@ $("sentence").addEventListener("keydown", (event) => {
   }
 });
 
+/* ---------- Ask: questions about the past or now ---------- */
+
+// One box on Live, Activity and a Whenever's page. What the person looks at fills its chips:
+// the chosen cameras, a pointed thing, an alert card, and a time span.
+const ASK_SCREENS = new Set(["live", "activity", "whenever"]);
+const ASK_SPANS = [
+  { label: "Any time", minutes: null },
+  { label: "Last hour", minutes: () => 60 },
+  { label: "Today", minutes: () => (Date.now() - new Date().setHours(0, 0, 0, 0)) / 60000 },
+  { label: "Since yesterday", minutes: () => (Date.now() - new Date().setHours(0, 0, 0, 0)) / 60000 + 24 * 60 },
+];
+const askContext = { thing: null, occurrence: null, cameras: null, span: 0 };
+let askPollTimer = null;
+let askShown = null;
+
+function askCameras() {
+  if (askContext.cameras) return askContext.cameras;
+  const rule = screen === "live" ? focusId && rules.find((r) => r.id === focusId)
+    : screen === "whenever" ? rules.find((r) => r.id === location.hash.split("/")[2]) : null;
+  return rule ? (rule.focus_cameras?.length ? rule.focus_cameras : rule.cameras || []) : [];
+}
+
+function askChip(text, onClear, extra = "") {
+  const chip = element("span", `ask-chip ${extra}`.trim());
+  chip.append(element("span", null, text));
+  if (onClear) {
+    const x = button("", "ask-chip-x", onClear, "x");
+    x.setAttribute("aria-label", `Remove ${text}`);
+    chip.append(x);
+  }
+  return chip;
+}
+
+function renderAskBar() {
+  const bar = $("ask-bar");
+  const on = ASK_SCREENS.has(screen) && !cameraMode && !!state;
+  bar.hidden = !on;
+  document.body.classList.toggle("has-ask", on);
+  if (!on) return;
+  const chips = [];
+  if (askContext.thing) {
+    const chip = askChip(`the ${askContext.thing.noun}`, () => { askContext.thing = null; renderAskBar(); }, "thing");
+    if (askContext.thing.crop) {
+      const img = element("img");
+      img.src = `data:image/jpeg;base64,${askContext.thing.crop}`;
+      img.alt = "";
+      chip.prepend(img);
+    }
+    chips.push(chip);
+  }
+  if (askContext.occurrence) {
+    const occ = askContext.occurrence;
+    chips.push(askChip(`${occ.rule}, ${clock(occ.t)}`, () => { askContext.occurrence = null; renderAskBar(); }, "occurrence"));
+  }
+  const cameras = askCameras();
+  if (cameras.length) chips.push(askChip(joinList(cameras), () => { askContext.cameras = []; renderAskBar(); }));
+  // A question about one alert has its time already, so the span chip would only mislead.
+  if (!askContext.occurrence) {
+    const span = ASK_SPANS[askContext.span];
+    const time = button(span.label, "ask-chip ask-time", () => {
+      askContext.span = (askContext.span + 1) % ASK_SPANS.length;
+      renderAskBar();
+    }, "clock");
+    time.setAttribute("aria-label", `Time span: ${span.label}. Tap to change.`);
+    chips.push(time);
+  }
+  if (screen === "live" && liveCamera) {
+    chips.push(button("Point at a thing", "ask-chip ask-point", () => openPointSheet(null, "ask"), "hand"));
+  }
+  $("ask-chips").replaceChildren(...chips);
+  $("ask-input").placeholder = askPlaceholder();
+}
+
+function askPlaceholder() {
+  if (askContext.thing) return `Ask about the ${askContext.thing.noun}, such as: when did it arrive?`;
+  if (askContext.occurrence) return "Ask about this, such as: who opened it?";
+  const noun = rules.map((r) => r.pointed).find(Boolean);
+  return noun ? `Ask anything, such as: when did the ${noun} last open?` : "Ask anything, such as: what happened in the last hour?";
+}
+
+function askSuggestions() {
+  if (askContext.thing) {
+    const noun = askContext.thing.noun;
+    return [`When did the ${noun} arrive?`, `Was the ${noun} here last night?`, `Who came near the ${noun} today?`];
+  }
+  if (askContext.occurrence) return ["Who was it?", "What did they do after?", "How long did it last?"];
+  const noun = rules.map((r) => r.pointed).find(Boolean);
+  const ideas = ["What happened in the last hour?"];
+  if (noun) ideas.unshift(`How many times did the ${noun} open today?`, `Is anyone at the ${noun} now?`);
+  return ideas.slice(0, 3);
+}
+
+function showAskIdeas() {
+  const box = element("div", "ask-ideas");
+  for (const idea of askSuggestions()) {
+    box.append(button(idea, "ask-idea", () => {
+      $("ask-input").value = idea;
+      $("ask-bar").requestSubmit();
+    }));
+  }
+  const chips = $("ask-chips");
+  chips.querySelector(".ask-ideas")?.remove();
+  // After what the question is about, so that chip stays in view, and before the time and point chips.
+  chips.insertBefore(box, chips.querySelector(".ask-time, .ask-point"));
+}
+
+$("ask-input").addEventListener("focus", () => { if (!$("ask-input").value) showAskIdeas(); });
+$("ask-input").addEventListener("input", () => { if ($("ask-input").value) $("ask-chips").querySelector(".ask-ideas")?.remove(); });
+$("ask-input").addEventListener("blur", () => setTimeout(() => $("ask-chips").querySelector(".ask-ideas")?.remove(), 200));
+
+// "/" opens the box from anywhere, as in a search field.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "/" || event.metaKey || event.ctrlKey || /input|textarea|select/i.test(event.target.tagName)
+      || event.target.isContentEditable) return;
+  event.preventDefault();
+  if (!ASK_SCREENS.has(screen)) location.hash = "#/activity";
+  setTimeout(() => $("ask-input").focus(), 50);
+});
+
+$("ask-bar").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const question = $("ask-input").value.trim();
+  if (!question) {
+    $("ask-input").focus();
+    return showAskIdeas();
+  }
+  const span = ASK_SPANS[askContext.span];
+  const context = {
+    cameras: askCameras(),
+    thing: askContext.thing && { id: askContext.thing.id, noun: askContext.thing.noun, camera: askContext.thing.camera },
+    occurrence: askContext.occurrence,
+    since_minutes_ago: !askContext.occurrence && span.minutes ? span.minutes() : null,
+  };
+  const shot = screen === "live" ? snapshot() : null;
+  openAskSheet({ question, status: "working", steps: ["Reading your question"] });
+  try {
+    const reply = await postJson("/api/ask", { question, context, snapshot: shot ? shot.url.split(",")[1] : null });
+    $("ask-input").value = "";
+    pollAsk(reply.id);
+  } catch (error) {
+    renderAsk({ question, status: "error", error: error.message, steps: [] });
+  }
+});
+
+function openAskSheet(job) {
+  renderAsk(job);
+  if (!$("ask-sheet").open) $("ask-sheet").showModal();
+}
+
+function pollAsk(id) {
+  clearTimeout(askPollTimer);
+  const tick = async () => {
+    let job;
+    try {
+      job = await (await fetch(`/api/ask/${id}`)).json();
+    } catch {
+      askPollTimer = setTimeout(tick, 1500);
+      return;
+    }
+    renderAsk(job);
+    if (job.status === "working" && $("ask-sheet").open) askPollTimer = setTimeout(tick, 900);
+    if (job.status === "done") loadJournal(true);
+  };
+  tick();
+}
+
+function renderAsk(job) {
+  askShown = job;
+  const body = $("ask-body");
+  $("ask-title").textContent = job.status === "working" ? "Looking" : "Answer";
+  const nodes = [element("p", "ask-question", job.question)];
+  if (job.status === "working") {
+    const steps = element("ol", "ask-steps");
+    const said = job.steps?.length ? job.steps : ["Reading your question"];
+    for (const [index, step] of said.entries()) {
+      const li = element("li", index === said.length - 1 ? "now" : "done");
+      li.append(index === said.length - 1 ? element("span", "wait-dot") : icon("check"), element("span", null, step));
+      steps.append(li);
+    }
+    nodes.push(steps);
+  } else if (job.status === "needs") {
+    nodes.push(element("p", "ask-answer", `This search looks at ${job.looked || "many"} moments and costs about `
+      + `${cents(job.estimate_usd)}.`));
+    const row = element("div", "pair-result");
+    row.append(button("Go ahead", "pill-button", async () => {
+      await postJson(`/api/ask/${job.id}/go`).catch((e) => flash(e.message));
+      pollAsk(job.id);
+    }, "check"), button("Make it smaller", "link-button", () => {
+      $("ask-sheet").close();
+      askContext.span = 1;
+      renderAskBar();
+      $("ask-input").value = job.question;
+      $("ask-input").focus();
+    }));
+    nodes.push(row);
+  } else if (job.status === "error") {
+    nodes.push(element("p", "ask-answer error", job.error || "Something went wrong."));
+  } else {
+    nodes.push(answerCard(job, true));
+  }
+  body.replaceChildren(...nodes);
+}
+
+function cents(usd) {
+  const value = Number(usd || 0) * 100;
+  return value < 1 ? "under 1 cent" : `${Math.round(value)} ${Math.round(value) === 1 ? "cent" : "cents"}`;
+}
+
+// An answer: one sentence, the proof in time order, and a way to keep watching for it.
+function answerCard(job, inSheet = false) {
+  const card = element("article", "answer-card" + (job.unclear ? " unclear" : ""));
+  card.append(element("p", "ask-answer", job.answer || ""));
+  const moments = job.moments || [];
+  const lead = moments.find((m) => m.clip) || moments[0];
+  if (lead?.clip) card.append(clipNode(lead.clip, lead.picture, inSheet));
+  else if (lead?.picture) {
+    const img = element("img", "answer-picture");
+    img.src = lead.picture;
+    img.alt = lead.note || "";
+    card.append(img);
+  }
+  if (moments.length > 1 || (moments.length === 1 && lead?.clip)) {
+    const strip = element("div", "answer-moments");
+    for (const moment of moments) {
+      const open = element("button", "answer-moment");
+      open.type = "button";
+      const title = [moment.camera, dayName(moment.t) === "Today" ? clockSeconds(moment.t) : `${dayName(moment.t)} ${clock(moment.t)}`]
+        .filter(Boolean).join(", ");
+      open.title = moment.note || title;
+      open.onclick = () => openFrame(moment.picture, moment.box || null, `${title}${moment.note ? `: ${moment.note}` : ""}`);
+      const img = element("img");
+      img.src = moment.picture;
+      img.alt = moment.note || title;
+      img.loading = "lazy";
+      open.append(img, element("span", null, clock(moment.t)));
+      strip.append(open);
+    }
+    card.append(strip);
+  }
+  const meta = [];
+  if (job.looked) meta.push(`Looked at ${job.looked} ${job.looked === 1 ? "moment" : "moments"}`);
+  if (job.span?.length === 2) meta.push(`${dayName(job.span[0]) === "Today" ? "" : `${dayName(job.span[0])} `}${clock(job.span[0])} to ${clock(job.span[1])}`);
+  if (job.cost != null) meta.push(cents(job.cost));
+  // Nothing found in part of the footage is not a "no": the meta says what is not seen yet instead.
+  const partial = !moments.length && job.unseen > 0;
+  if (partial) meta.push(`${job.unseen} not seen yet`);
+  else if (job.sure != null && !job.unclear) meta.push(`${Math.round(job.sure * 100)}% sure`);
+  card.append(element("p", "entry-meta", meta.join(" · ")));
+  const row = element("div", "entry-buttons");
+  if (partial && job.more_usd && job.id) {
+    // One more search has a limit, so the button says how many it sees when that is not all of them.
+    const all = !job.more_moments || job.more_moments >= job.unseen;
+    const label = all ? "Look at the rest" : `Look at ${job.more_moments} more`;
+    row.append(button(`${label} · about ${cents(job.more_usd)}`, "pill-button", async (event) => {
+      event.currentTarget.disabled = true;
+      try {
+        await postJson(`/api/ask/${job.id}/go`);
+      } catch (error) {
+        flash(error.message);
+        return;
+      }
+      openAskSheet({ ...job, status: "working", steps: [...(job.steps || []), "Looking at the rest"] });
+      pollAsk(job.id);
+    }, "search"));
+  }
+  if (job.unclear) {
+    row.append(button("Answer it", "chip", () => {
+      $("ask-sheet").close();
+      $("ask-input").value = `${job.question} `;
+      $("ask-input").focus();
+    }, "pencil"));
+  }
+  if (job.watch && !job.unclear) {
+    row.append(button("Watch for this from now on", "chip", () => {
+      if ($("ask-sheet").open) $("ask-sheet").close();
+      watchFromAnswer(job.watch);
+    }, "bell"));
+  }
+  if (job.steps?.length) {
+    const how = element("details", "occ-details");
+    how.append(element("summary", null, "How Whenever found it"));
+    const lines = element("ol", "occ-lines");
+    for (const step of job.steps) lines.append(element("li", null, step));
+    how.append(lines);
+    card.append(row, how);
+  } else {
+    card.append(row);
+  }
+  return card;
+}
+
+// An answer becomes a Whenever: the words go to Create, ready to check.
+function watchFromAnswer(sentence) {
+  let text = String(sentence || "").trim().replace(/^(when|whenever)\s+/i, "");
+  let then = "";
+  const split = text.match(/^(.*?),?\s+then\s+(.*)$/i);
+  if (split) [text, then] = [split[1], split[2]];
+  location.hash = "#/create";
+  setTimeout(() => {
+    endEdit();
+    $("sentence").value = text.replace(/[.,;]+$/, "");
+    thenPicked.clear();
+    if (/phone|alert|notif/i.test(then)) thenPicked.add("phone");
+    else if (then) $("then-extra").value = then.replace(/[.]+$/, "");
+    keys.then = "";
+    renderThenChips();
+    updatePreview();
+    showStep("compose");
+    $("sentence").focus();
+  }, 60);
+}
+
+$("ask-close").addEventListener("click", () => $("ask-sheet").close());
+$("ask-sheet").addEventListener("click", (event) => { if (event.target === $("ask-sheet")) $("ask-sheet").close(); });
+$("ask-sheet").addEventListener("close", () => clearTimeout(askPollTimer));
+
+// A question asked from a card is about that one event.
+function askAboutOccurrence(card) {
+  askContext.occurrence = card;
+  askContext.thing = null;
+  renderAskBar();
+  $("ask-input").focus();
+}
+
+// An answer in Activity: the question, the answer and its first pictures. A tap opens it whole.
+function answerEntry(row) {
+  const li = element("li", "occurrence answer-entry");
+  li.dataset.t = row.t;
+  const head = element("div", "occ-head");
+  const words = element("div", "occ-words");
+  words.append(element("span", "ask-asked", `You asked: ${row.values?.question || ""}`), element("b", null, row.text),
+    element("span", "entry-meta", [clock(row.t), row.values?.cost != null ? cents(row.values.cost) : ""].filter(Boolean).join(" · ")));
+  head.append(words);
+  li.append(head);
+  const pictures = row.values?.pictures || [];
+  if (pictures.length) {
+    const strip = element("div", "answer-moments");
+    for (const url of pictures) {
+      const img = element("img");
+      img.src = url;
+      img.alt = "";
+      img.loading = "lazy";
+      strip.append(img);
+    }
+    li.append(strip);
+  }
+  const row_ = element("div", "entry-buttons");
+  row_.append(button("Open the answer", "chip", async () => {
+    const job = await (await fetch(`/api/ask/${row.values.ask}`)).json().catch(() => null);
+    if (job && !job.error) openAskSheet(job);
+  }, "search"));
+  li.append(row_);
+  return li;
+}
+
 /* ---------- Start ---------- */
 
 paintIcons();
 try { source = params.has("clip") ? "clip" : localStorage.getItem("whenever-source"); } catch { source = null; }
 if (params.has("clip")) source = "clip";
 
-fetch("/api/claim", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ page: pageId }),
+// This computer's camera starts only when nothing else feeds Whenever, so a page that only watches the
+// security cameras never asks for the webcam. Such a page also never claims the feed: just after a
+// restart, a claim would take it from the camera reader until the reader takes it back.
+refreshState().then(async () => {
+  // Just after the server restarts, nobody owns the feed, and the camera reader takes it back within
+  // seconds. Wait for that before this page takes the webcam.
+  for (let tries = 0; source && !state?.owner?.page && tries < 8; tries++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await refreshState();
+  }
+  if (!source || liveCamera || state?.owner?.cameras) return;
+  await fetch("/api/claim", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ page: pageId }),
+  }).catch(() => {});
+  startVideo(source);
 });
-if (source) startVideo(source);
-refreshState();
 setInterval(tick, TICK_MS);
 setInterval(refreshState, POLL_MS);
 setInterval(() => { if (screen === "whenevers") renderList(); }, 30000);

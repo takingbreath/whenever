@@ -14,3 +14,5 @@ ezviz_open.env
 /data/
 actions.env
 .impeccable/review/
+/.media/
+models/
