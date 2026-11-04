@@ -97,7 +97,7 @@ class People(unittest.TestCase):
             vector[340], vector[10] = score, (1 - score * score) ** 0.5
             return {"face": None, "look": vector, "face_size": 0}
         self.book.tag("Ravi", picture(0, clothes=40))   # the face turned away: only the clothes
-        self.assertIsNone(self.book.match(near(0.91)), "a waiter in dark clothes came this near")
+        self.assertIsNone(self.book.match(near(0.925)), "a waiter in dark clothes came this near")
         self.assertEqual(self.book.match(near(0.95))["name"], "Ravi")
         self.book.tag("Ravi", picture(7, clothes=40))   # now a face of Ravi today too
         self.assertEqual(self.book.match(near(0.91))["name"], "Ravi")

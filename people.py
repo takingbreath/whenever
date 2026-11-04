@@ -72,9 +72,9 @@ VISITOR_FACE_PX = 40
 LOOK_HOURS = 12.0
 LOOK_MATCH = 0.90
 # A name that rests only on the operator's tag of clothes today, with no face of that person today, needs
-# a nearer look. In the cafe clip the same guest's look scored 0.94 to 0.98 between frames, and the nearest
-# other person, a waiter also in dark clothes, 0.89.
-LOOK_TAG_MATCH = 0.92
+# a nearer look. In the cafe clip the same seated guest's look scored 0.94 to 0.98 between frames, while a
+# guest and a waiter both in dark clothes scored up to 0.926 against each other's tags.
+LOOK_TAG_MATCH = 0.93
 LOOK_MARGIN = 0.04        # a look must be this much nearer one person than any other tagged person
 MAX_FACES = 40
 MAX_LOOKS = 30
