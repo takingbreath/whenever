@@ -849,7 +849,7 @@ async function renderPersonPage(id) {
       const said = element("span", "place-words");
       const when = `${dayName(s.t)}, ${clock(s.t)}`;
       said.append(element("b", null, when), element("small", null,
-        [s.camera, s.sure != null ? `${Math.round(s.sure * 100)}% sure${s.by ? ` by ${s.by}` : ""}` : ""].filter(Boolean).join(" · ")));
+        [s.camera, s.sure != null ? `~${Math.round(s.sure * 100)}% estimated match${s.by ? ` by ${s.by}` : ""}` : ""].filter(Boolean).join(" · ")));
       open.append(img, said, icon("arrow"));
       open.addEventListener("click", () => openFrame(s.picture, s.box || null, `${person.name}, ${s.camera || ""} ${when}`.trim()));
       row.append(open);
@@ -2640,7 +2640,8 @@ function roleChips(box, current, onPick) {
   return box;
 }
 
-// Who Whenever thinks this is: the tagged face beside the face now, how sure it is, and why. Each answer
+// Who Whenever thinks this is: the tagged face beside the face now, the estimated match, and why. The
+// percentage is an estimate from our own small test, not a measured accuracy at this site. Each answer
 // teaches it the face, and how far each kind of score can be trusted with these cameras.
 function whoNode(who) {
   const box = element("div", "who");
@@ -2673,10 +2674,10 @@ function whoNode(who) {
     const percent = Math.round(who.sure * 100);
     const sure = element("div", "who-sure");
     const label = element("div", "who-sure-label");
-    label.append(element("span", null, "How sure"), element("b", null, `${percent}%`));
+    label.append(element("span", null, "Estimated match"), element("b", null, `~${percent}%`));
     const bar = element("div", "who-bar");
     bar.setAttribute("role", "meter");
-    bar.setAttribute("aria-label", "How sure");
+    bar.setAttribute("aria-label", "Estimated match");
     bar.setAttribute("aria-valuemin", "0");
     bar.setAttribute("aria-valuemax", "100");
     bar.setAttribute("aria-valuenow", String(percent));
@@ -4900,7 +4901,8 @@ function personParts(p, level, age) {
   const seated = p.seated_s != null;
   const time = seated ? p.seated_s : p.stayed_s;
   const timer = time != null ? mmss(time + age) : "";
-  const sure = p.sure != null ? `${Math.round(p.sure * 100)}%` : "";
+  // "~72%": an estimated match, not a measured accuracy. The tilde keeps the chip short on a phone.
+  const sure = p.sure != null ? `~${Math.round(p.sure * 100)}%` : "";
   if (level >= 3) {
     return [
       { text: ROLE_WORD[role] || words(role), color, weight: 600 },

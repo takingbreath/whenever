@@ -1,7 +1,8 @@
 """Muse Wonder writes each rule: its sensors, its code and its tests.
 
 Wonder works in the rule's sandbox. It can write files, install any Python library and run
-commands. A rule goes live only after its tests pass and its sensors pass any example.
+commands. A rule goes live only after its tests pass, two reviewers pass its exact sensors and
+code, and its sensors pass any example.
 """
 
 import json
@@ -639,6 +640,11 @@ class WriterError(Exception):
     pass
 
 
+class ReviewFailed(WriterError):
+    """The reviewers still reject the rule after every round of changes. The job stops here,
+    because Wonder's own tests passing is not a substitute for passing review."""
+
+
 def describe_example(client, frames):
     """Used when a person records an example and writes nothing."""
     answer, _ = client.ask_text(
@@ -847,6 +853,21 @@ def clean_path(path):
     return "/".join(parts)
 
 
+def reject(review, progress, label, faults, advice):
+    """A review said no. Wonder gets MAX_REVIEW_ROUNDS chances to fix the rule. After that, the
+    job stops with the last faults, and the rule never goes live without passing review."""
+    progress(label + faults[0])
+    if review["rounds"] >= MAX_REVIEW_ROUNDS:
+        for fault in faults[1:]:
+            progress(label + fault)
+        # The advice comes first, because the page shows only the start of a long error.
+        raise ReviewFailed(
+            f"The rule is not live. After {MAX_REVIEW_ROUNDS} rounds of changes, a reviewer still rejects it. "
+            "Make your words more exact, and try again. Last faults: " + " | ".join(faults))
+    review["rounds"] += 1
+    return advice, None
+
+
 def handle(call, folder, client, example, idle, progress, motions=None, sentence="", review=None):
     args = json.loads(call["arguments"] or "{}")
     review = review if review is not None else {"rounds": 0}
@@ -887,24 +908,27 @@ def handle(call, folder, client, example, idle, progress, motions=None, sentence
             progress("Final test run failed")
             return f"test_rule.py failed, so the rule is not live.\n{output}", None
         progress("Tests passed")
-        rejected = []
-        if review["rounds"] < MAX_REVIEW_ROUNDS:
+        try:
+            source = sandbox.inside(folder, "rule.py").read_text()
+        except OSError:
+            return "rule.py is missing, so the rule is not live. Write it and call finish.", None
+        # An approval holds only for the exact sensors and code that the reviewers read.
+        reviewed = json.dumps([args["sensors"], source], sort_keys=True)
+        if review.get("approved") != reviewed:
             rejected = [item for sensor in args["sensors"] for item in review_facts(client, sentence, sensor)]
-        if rejected:
-            review["rounds"] += 1
-            progress("Reviewer rejected: " + rejected[0])
-            return ("The rule is not live. A reviewer found facts that are not essential, so the rule "
+            if rejected:
+                return reject(review, progress, "Reviewer rejected: ", rejected, (
+                    "The rule is not live. A reviewer found facts that are not essential, so the rule "
                     "would miss real events:\n" + "\n".join(rejected) +
-                    "\nRemove them or rewrite them, change rule.py if it needs it, and call finish."), None
-        if review["rounds"] < MAX_REVIEW_ROUNDS:
+                    "\nRemove them or rewrite them, change rule.py if it needs it, and call finish."))
             progress("A reviewer is checking the rule against your words")
-            faults = review_rule(client, sentence, args["sensors"], sandbox.inside(folder, "rule.py").read_text())
+            faults = review_rule(client, sentence, args["sensors"], source)
             if faults:
-                review["rounds"] += 1
-                progress("Reviewer found: " + faults[0])
-                return ("The rule is not live. A reviewer compared it with the person's words and found "
-                        "these faults:\n" + "\n".join(faults) +
-                        "\nChange rule.py, test_rule.py and the sensors as needed, and call finish."), None
+                return reject(review, progress, "Reviewer found: ", faults, (
+                    "The rule is not live. A reviewer compared it with the person's words and found "
+                    "these faults:\n" + "\n".join(faults) +
+                    "\nChange rule.py, test_rule.py and the sensors as needed, and call finish."))
+            review["approved"] = reviewed
         if example:
             progress("Checking the sensors on your recording")
         problems = check_sensors(client, args["sensors"], example, idle, motions)
@@ -1030,6 +1054,9 @@ def write_rule(client, folder, sentence, example=None, idle=None, progress=lambd
         for call in calls:
             try:
                 output, done = handle(call, folder, client, example, idle, progress, motions, sentence, review)
+            except ReviewFailed as e:
+                e.cost = cost   # the job ends here, but its turns were paid for
+                raise
             except (WriterError, ApiError, KeyError, ValueError) as e:
                 output, done = f"Error: {e}", None
             if done:

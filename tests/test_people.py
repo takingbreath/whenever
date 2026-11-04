@@ -257,8 +257,34 @@ class Sure(unittest.TestCase):
         before = people.sure_of(0.33)
         self.assertLess(people.sure_of(0.33, counts=(0, 20)), before * 0.6)
         self.assertGreater(people.sure_of(0.33, counts=(20, 0)), before)
-        self.assertEqual(people.combine([0.5, 0.5]), 0.75)
-        self.assertEqual(people.combine([0.9, 0.9, 0.9]), 0.99)
+        # Two looks 10 s apart: the second removes half of the doubt that is left, not all of its own miss.
+        self.assertEqual(people.combine([(0, 0.6), (10, 0.6)]), 0.72)
+        self.assertEqual(people.combine([(0, 0.9), (10, 0.9), (20, 0.9)]), 0.97)
+
+    def test_looks_close_in_time_count_as_one_look(self):
+        # A fraction of a second apart, the face, the pose and the light are the same: keep the surest.
+        self.assertEqual(people.combine([(0.0, 0.6), (0.4, 0.75), (0.8, 0.6), (4.9, 0.7)]), 0.75)
+        self.assertEqual(people.separate_looks([(0.0, 0.6), (0.4, 0.75), (6.0, 0.7)]), [0.75, 0.7])
+        # Groups start at their first look, so a long stream still counts once every LOOK_APART_S.
+        stream = [(i * 0.5, 0.6) for i in range(30)]
+        self.assertEqual(len(people.separate_looks(stream)), 3)
+        self.assertEqual(people.separate_looks([(10, 0.5), (0, 0.6)]), [0.6, 0.5])   # in time order
+
+    def test_more_looks_never_make_a_middle_band_match_sure(self):
+        looks = [(t * 10.0, 0.6) for t in range(20)]
+        self.assertEqual(people.combine(looks), round(0.6 + people.LOOK_GAIN, 3))
+        self.assertLess(people.combine(looks), 0.95)
+        # The estimate only grows with a separate look, and never passes MAX_SURE.
+        self.assertGreaterEqual(people.combine([(0, 0.7), (10, 0.65)]), people.combine([(0, 0.7)]))
+        self.assertEqual(people.combine([(0, 0.99), (10, 0.99)]), people.MAX_SURE)
+        self.assertEqual(people.combine([(0, 0.8)]), 0.8)
+        self.assertEqual(people.combine([]), 0.0)
+
+    def test_the_estimate_is_below_independent_chances(self):
+        looks = [(0, 0.75), (8, 0.7), (30, 0.8)]
+        independent = 1 - (1 - 0.75) * (1 - 0.7) * (1 - 0.8)
+        self.assertLess(people.combine(looks), independent)
+        self.assertGreater(people.combine(looks), 0.8)
 
 
 class Visitors(unittest.TestCase):

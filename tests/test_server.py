@@ -2078,6 +2078,36 @@ class Editing(TempLogs):
         self.assertIs(self.app_.entries["old"], self.old)
         self.assertEqual(self.stopped, [])
 
+    def test_an_edit_that_fails_review_leaves_the_old_rule_running(self):
+        """The real writer runs, with a Wonder that keeps calling finish and a reviewer that keeps saying no."""
+        fault = "It stops after 4 s. Fix: Arm a sensor."
+        (self.old_folder / "rule.py").write_text("def on_event(ctx): pass\n")
+
+        class Wonder:
+            def _post(self, body, timeout=0, retries=0):
+                args = {"name": "New", "sensors": [{"id": "s", "target": "", "question": "q", "requires": []}],
+                        "schedules": [], "plan": [], "unsupported": ""}
+                call = {"type": "function_call", "name": "finish", "arguments": json.dumps(args), "call_id": "c"}
+                return json.dumps({"output": [call], "usage": {"input_tokens": 10, "output_tokens": 1}}).encode()
+
+        def copy(source, rule_id):
+            target = self.base / rule_id
+            shutil.copytree(source, target)
+            return target
+        self.app_.client = Wonder()
+        job = {"id": "j", "status": "working", "steps": [], "error": ""}
+        with mock.patch.object(server.sandbox, "copy_rule", copy), \
+                mock.patch.object(server.sandbox, "run", return_value=(0, "OK")), \
+                mock.patch.object(server.writer, "review_rule", lambda *args: [fault]), \
+                mock.patch.object(server, "Rule", FakeWorkerRule):
+            self.app_._write(job, "new words", [], [], None, None, None, self.old)
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("not live", job["error"])
+        self.assertIn("It stops after 4 s.", job["error"])
+        self.assertEqual(list(self.app_.entries), ["old"])
+        self.assertIs(self.app_.entries["old"], self.old)
+        self.assertEqual(self.stopped, [])
+
     def test_the_pointed_object_stays_after_an_edit(self):
         job = self.run_edit()
         self.assertEqual(self.app_.entries[job["rule"]].pointed["noun"], "bottle")

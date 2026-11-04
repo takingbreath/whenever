@@ -250,6 +250,26 @@ class Analyzer(unittest.TestCase):
             self.look(t, [person(GUEST), person((0.70, 0.30, 0.80, 0.60))])
         self.assertEqual(self.live.alert_people(["Cafe"], 3601)["people"], [])
 
+    def test_face_matches_a_moment_apart_do_not_stack(self):
+        """Matches a fraction of a second apart are one look, so they cannot add up to a sure name."""
+        cam = SimpleNamespace(name="Cafe", tracks={})
+        track = live.Track(1, "Cafe", "person", 0.0)
+        cam.tracks[1] = track
+        self.live._arrived = lambda *args: None
+        match = {"id": "p1", "person_id": "p1", "name": "Asha", "role": "", "score": 0.31, "face_px": 60, "sure": 0.6}
+        for t in (1.0, 1.3, 1.6, 2.0, 2.4):
+            self.live._named(cam, track, dict(match), t, None)
+        # The old rule called these five independent chances: 1 - 0.4 ** 5 = 0.99.
+        self.assertEqual(track.who["sure"], 0.6)
+        self.assertLess(track.who["sure"], live.ALERT_SURE)
+        self.live._named(cam, track, dict(match), 12.0, None)       # a separate look, seconds later
+        self.assertEqual(track.who["sure"], 0.72)
+        self.assertEqual(people.separate_looks(track.hits["p1"]), [0.6, 0.6])
+        for t in range(20, 200, 10):
+            self.live._named(cam, track, dict(match), float(t), None)
+        self.assertEqual(track.who["sure"], round(0.6 + people.LOOK_GAIN, 3))
+        self.assertLess(track.who["sure"], live.SURE_ENOUGH)
+
     def test_an_alert_story_keeps_each_moment_once(self):
         for t in (10, 50, 90):
             self.live._event("Cafe", "seated", "T5 seated", None, None, GUEST, t)

@@ -98,6 +98,12 @@ SURE_BANDS = {"arcface": (0.25, 0.30, 0.36), "sface": (0.36, 0.42, 0.50)}
 SMALL_FACE, LARGE_FACE = 24, 48   # pixels across: the two sizes that were measured
 PRIOR_WEIGHT = 20                 # the curve counts as this many answers, so a few answers move it a little
 MAX_SURE = 0.99                   # nothing is ever certain
+# Several looks at one track: a cautious choice, not a measurement. Looks closer than LOOK_APART_S are one
+# look. A further look removes LOOK_WEIGHT of the doubt that is left, and all further looks add at most
+# LOOK_GAIN to the surest look.
+LOOK_APART_S = 5.0
+LOOK_WEIGHT = 0.5
+LOOK_GAIN = 0.15
 MIN_SURE = 0.6                    # a face match less sure than this names nobody
 LOOK_SAME_CAMERA, LOOK_OTHER_CAMERA = 0.9, 0.8   # a name carried by clothes is less sure than the face
 # Clothes carry a name on a camera where the person was seen today, but to another camera only this soon
@@ -178,13 +184,32 @@ def sure_of(score, face_px=LARGE_FACE, kind=FACE_MODEL, counts=None):
     return round(min(MAX_SURE, max(0.0, sure)), 3)
 
 
-def combine(sures):
-    """How sure several looks at one person make it, each a chance on its own: 1 - the product of the
-    misses, at most MAX_SURE."""
-    miss = 1.0
-    for sure in sures:
-        miss *= 1.0 - max(0.0, min(1.0, float(sure)))
-    return round(min(MAX_SURE, 1.0 - miss), 3)
+def separate_looks(looks):
+    """The face looks at one track that count as separate looks. looks are (t, sure) pairs. Looks less
+    than LOOK_APART_S after the first look of their group show the same pose and the same light, so a
+    group counts as one look: its surest. Returns the sure of each group, in time order."""
+    groups = []
+    for t, sure in sorted((float(t), max(0.0, min(1.0, float(sure)))) for t, sure in looks):
+        if groups and t - groups[-1][0] < LOOK_APART_S:
+            groups[-1][1] = max(groups[-1][1], sure)
+        else:
+            groups.append([t, sure])
+    return [sure for _, sure in groups]
+
+
+def combine(looks):
+    """A conservative estimate of how sure several face looks at one track make it. looks are (t, sure)
+    pairs. Looks of one track are never independent chances: the face, the camera and the light stay the
+    same. So looks close in time count as one (separate_looks), each further look removes only
+    LOOK_WEIGHT of the doubt that is left, and all further looks together add at most LOOK_GAIN to the
+    surest look. Many middle-band looks therefore never make a sure match. At most MAX_SURE."""
+    sures = sorted(separate_looks(looks), reverse=True)
+    if not sures:
+        return 0.0
+    miss = 1.0 - sures[0]
+    for sure in sures[1:]:
+        miss *= 1.0 - LOOK_WEIGHT * sure
+    return round(min(MAX_SURE, sures[0] + LOOK_GAIN, 1.0 - miss), 3)
 
 
 def same_day(a, b):
