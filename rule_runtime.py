@@ -159,6 +159,61 @@ def place_of(thing, places, point=center, near=0.0):
     return best[1] if best else None
 
 
+def beside(place, side="below", size=1.0, name=None):
+    """A Place next to another one, such as the floor in front of a counter where people queue. side is
+    "below", "above", "left" or "right", and size is its depth as a share of the place's own height or
+    width. It keeps the place's camera."""
+    x1, y1, x2, y2 = _box(place)
+    w, h = (x2 - x1) * size, (y2 - y1) * size
+    box = {"below": (x1, y2, x2, y2 + h), "above": (x1, y1 - h, x2, y1),
+           "left": (x1 - w, y1, x1, y2), "right": (x2, y1, x2 + w, y2)}[side]
+    box = tuple(min(1.0, max(0.0, v)) for v in box)
+    base = getattr(place, "name", "") or "place"
+    return Place(name or f"{side} {base}", getattr(place, "camera", ""), box)
+
+
+def edge(place, side="bottom"):
+    """Two points along one edge of a place, "top", "bottom", "left" or "right", such as the threshold
+    of a door, for a Line."""
+    x1, y1, x2, y2 = _box(place)
+    return {"top": ((x1, y1), (x2, y1)), "bottom": ((x1, y2), (x2, y2)),
+            "left": ((x1, y1), (x1, y2)), "right": ((x2, y1), (x2, y2))}[side]
+
+
+def _cross(p, q, a, b):
+    """True if the step from p to q crosses the segment from a to b."""
+    def turn(o, u, v):
+        return (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0])
+    return turn(a, b, p) * turn(a, b, q) < 0 and turn(p, q, a) * turn(p, q, b) < 0
+
+
+class Line:
+    """A line in one camera's picture that things cross, such as a doorway or the edge of a pavement.
+    a and b are its two ends and inside is any point on the side that counts as in, such as a point in
+    the room, each (x, y) from 0 to 1."""
+
+    def __init__(self, name="", camera="", a=(0.0, 0.5), b=(1.0, 0.5), inside=(0.5, 1.0)):
+        self.name = name
+        self.camera = camera
+        self.a, self.b, self.inside = tuple(a), tuple(b), tuple(inside)
+
+    def side(self, point):
+        """1 on the inside, -1 on the outside, 0 on the line itself."""
+        away = self.away(point)
+        return 0 if away == 0 else (1 if away > 0 else -1)
+
+    def away(self, point):
+        """How far a point is from the line, in picture widths: more than 0 on the inside, less on the outside."""
+        def turn(p):
+            return (self.b[0] - self.a[0]) * (p[1] - self.a[1]) - (self.b[1] - self.a[1]) * (p[0] - self.a[0])
+        length = ((self.b[0] - self.a[0]) ** 2 + (self.b[1] - self.a[1]) ** 2) ** 0.5 or 1e-9
+        here = turn(point) / length
+        return here if turn(self.inside) > 0 else -here
+
+    def __repr__(self):
+        return f"Line({self.name!r}, {self.camera}, {self.a} to {self.b})"
+
+
 class Place:
     """A named place in one camera, such as "table 3". box is (x1, y1, x2, y2) from 0 to 1."""
 
@@ -177,10 +232,12 @@ class Found:
     is how many seconds it has been in about this spot: a seated person or a parked car stays, and a
     passer-by does not. tall is the box's height over its width in pixels: a person who stands is about
     2.5 or more, and one who sits is about 2 or less, seen from a camera on a wall. place is the name of
-    its place, when ctx.detect got places."""
+    its place, when ctx.detect got places. pose, when ctx.detect got pose=True, is a dict with points
+    (17 body points) and hand_up, lying and sitting, each True, False or None when the body hides it.
+    direction is "in" or "out" for a Found that ctx.crossings returns."""
 
     def __init__(self, frame=None, camera="", label="", confidence=0.0, box=(0.0, 0.0, 0.0, 0.0), id=None, place=None,
-                 stayed=0.0, tall=0.0):
+                 stayed=0.0, tall=0.0, pose=None):
         self.frame = frame
         self.camera = camera
         self.label = label
@@ -190,6 +247,8 @@ class Found:
         self.place = place
         self.stayed = stayed
         self.tall = tall
+        self.pose = pose
+        self.direction = None
 
     def __repr__(self):
         return f"Found({self.label} {self.id} in {self.place or self.camera}, confidence={self.confidence})"
@@ -197,18 +256,32 @@ class Found:
 
 class Tracker:
     """Gives each found thing a number across looks. A thing keeps the number of the thing of its kind,
-    in the same camera, whose box it covers most in the newest earlier look, if they cover each other
-    at least min_overlap, and if that thing was seen in the last max_gap_s. It suits things that move a
-    little between looks, such as people at tables or a parked car, not a runner between far looks."""
+    in the same camera and seen in the last max_gap_s, whose box it covers most, if they cover each other
+    at least min_overlap. Failing that, it keeps the number of the nearest such thing whose middle is less
+    than max_step of the taller box's height away: a person who walks away from the camera shrinks, and
+    at one or two looks a second the boxes hardly overlap. It suits people and cars at a few looks a
+    second, not a runner between far looks."""
 
     STAY_OVERLAP = 0.5   # a thing that still covers half of the box where it stopped has stayed there
 
-    def __init__(self, min_overlap=0.3, max_gap_s=30.0):
+    def __init__(self, min_overlap=0.3, max_gap_s=30.0, max_step=0.5):
         self.min_overlap = min_overlap
         self.max_gap_s = max_gap_s
+        self.max_step = max_step
         self.tracks = {}   # number: [camera, label, box, t, the box where it stopped, since when]
         self.newest = {}   # camera: the time of its newest look
         self.numbers = itertools.count(1)
+
+    def _fit(self, item, box):
+        """How well a new box fits an old one: from 1 to min_overlap by overlap, below that by nearness,
+        and 0 when it does not fit."""
+        cover = overlap(item.box, box)
+        if cover >= self.min_overlap:
+            return cover
+        (x1, y1), (x2, y2) = center(item.box), center(box)
+        tallest = max(item.box[3] - item.box[1], box[3] - box[1], 1e-6)
+        step = ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5 / tallest
+        return self.min_overlap * (1 - step / self.max_step) if step < self.max_step else 0.0
 
     def number(self, found, t):
         """Sets .id on each Found of one look at time t, in one camera."""
@@ -218,11 +291,11 @@ class Tracker:
         older = t < self.newest.get(camera, t)
         open_tracks = {n: track for n, track in self.tracks.items()
                        if track[0] == camera and abs(t - track[3]) <= self.max_gap_s}
-        pairs = sorted(((overlap(item, track[2]), i, n) for i, item in enumerate(found)
+        pairs = sorted(((self._fit(item, track[2]), i, n) for i, item in enumerate(found)
                         for n, track in open_tracks.items() if track[1] == item.label), reverse=True)
         taken = set()
         for score, i, n in pairs:
-            if score < self.min_overlap or found[i].id is not None or n in taken:
+            if score <= 0 or found[i].id is not None or n in taken:
                 continue
             item, track = found[i], open_tracks[n]
             item.id = n
@@ -289,6 +362,7 @@ class Context:
         self.place_list = []
         self.tracker = Tracker()
         self._steady = {}
+        self._lines = {}
         self._call = call
         try:
             self.pointed = json.loads((Path(self.folder) / "pointed.json").read_text())
@@ -373,14 +447,15 @@ class Context:
         return self._call("find", thing=str(thing)[:60], frame=frame.name, check=self._check())
 
     def detect(self, things="person", frames=None, camera=None, places=None, min_confidence=0.35, region=None,
-               near=0.5):
+               near=0.5, pose=False):
         """The local detector finds common things, such as "person", "car" or "chair", in each camera of
         each frame. It runs on the server's CPU and costs nothing. Returns a list of Found, in time order.
 
         things is one word or a list. camera limits it to one camera. places, a list of Place, sets
         each Found's place: the place that holds its seat point, or the nearest one less than near times
         that place's size away. region, a box from 0 to 1, makes it look only there, at more pixels, which
-        finds small far things better. Each Found gets an id that stays while the thing stays put.
+        finds small far things better. Each Found gets an id that stays while the thing stays put. pose
+        adds body points to each person, about 15 ms a person, also free.
         """
         frames = self._list(frames)
         words = [things] if isinstance(things, str) else list(things)
@@ -390,9 +465,9 @@ class Context:
             by_name = {f.name: f for f in frames}
             reply = self._call("detect", things=[str(w)[:40] for w in words][:8], frames=[f.name for f in frames],
                                camera=str(camera) if camera else None, min_confidence=float(min_confidence),
-                               region=list(_box(region)) if region else None, check=self._check())
+                               region=list(_box(region)) if region else None, pose=bool(pose), check=self._check())
             found = [Found(by_name.get(item["frame"]), item["camera"], item["label"], item["confidence"], item["box"],
-                           tall=item.get("tall", 0.0)) for item in reply]
+                           tall=item.get("tall", 0.0), pose=item.get("pose")) for item in reply]
         looks = {}
         for item in found:
             looks.setdefault((item.camera, item.frame.t if item.frame else 0.0), []).append(item)
@@ -402,6 +477,61 @@ class Context:
             for item in found:
                 item.place = place_of(item, places, point=seat, near=near)
         return found
+
+    def crossings(self, line, found, max_gap_s=3.0, margin=0.02):
+        """The things in found that crossed a Line, each a Found with .direction "in" or "out", in time
+        order. A thing crosses when the middle of its box's bottom edge goes from more than margin (a share
+        of the picture's width) on one side to more than margin on the other, within max_gap_s, through
+        the line between its ends. A person who sits or stands near the line does not count again and
+        again. Pass ctx.detect results of frames about 0.25 s apart, such as
+        ctx.detect("person", ctx.frames(before=5, count=20), camera=line.camera), because a person walks
+        through a door in about a second. Frames that an earlier call already counted for this line are
+        skipped, so calls can overlap and nothing counts twice."""
+        seen = self._lines.setdefault(line.name or repr(line), {"until": float("-inf"), "last": {}})
+        crossed, newest = [], seen["until"]
+        for item in sorted(found, key=lambda f: f.frame.t if f.frame else 0.0):
+            t = item.frame.t if item.frame else 0.0
+            if t <= seen["until"] or item.id is None or (line.camera and item.camera != line.camera):
+                continue
+            newest = max(newest, t)
+            point = foot(item)
+            away = line.away(point)
+            if abs(away) < margin:
+                continue  # too near the line to say which side it is on
+            here = 1 if away > 0 else -1
+            before = seen["last"].get(item.id)   # (time, point, side) of its last clear look
+            if before and before[2] != here and t - before[0] <= max_gap_s and _cross(before[1], point, line.a, line.b):
+                item.direction = "in" if here > 0 else "out"
+                crossed.append(item)
+            seen["last"][item.id] = (t, point, here)
+        seen["until"] = newest
+        seen["last"] = {n: last for n, last in seen["last"].items() if newest - last[0] <= 30}
+        return crossed
+
+    def visit(self, key, present, t=None, gone_s=30.0):
+        """Follows the visits at one place, such as guests at a table, a car in a parking space or a person
+        at the host stand. present says whether someone or something is there now. A visit starts when
+        it is present, and ends when it has been gone for gone_s, so a short gap, such as a guest hidden
+        by a waiter, does not split it. Returns None, or a dict when a visit starts or ends:
+        {"kind": "start", "key", "t", "empty_s"} with the seconds since the last visit ended, or None, or
+        {"kind": "end", "key", "start", "end", "seconds"}. ctx.state keeps open visits across restarts."""
+        if t is None:
+            t = self.event.t if self.event else time.time()
+        t = float(t)
+        visits = self.state.setdefault("visits", {})
+        now = visits.get(str(key)) or {"start": None, "seen": None, "ended": None}
+        if present:
+            if now["start"] is None:
+                visits[str(key)] = {"start": t, "seen": t, "ended": now["ended"]}
+                return {"kind": "start", "key": key, "t": t,
+                        "empty_s": t - now["ended"] if now["ended"] is not None else None}
+            now["seen"] = max(now["seen"], t)
+            return None
+        if now["start"] is not None and t - now["seen"] >= gone_s:
+            visits[str(key)] = {"start": None, "seen": None, "ended": now["seen"]}
+            return {"kind": "end", "key": key, "start": now["start"], "end": now["seen"],
+                    "seconds": now["seen"] - now["start"]}
+        return None
 
     def places(self, thing, camera=None):
         """Every such thing in the cameras that stay still, such as "table", each as a Place with a name

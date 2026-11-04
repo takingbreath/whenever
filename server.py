@@ -112,6 +112,7 @@ MAX_ASK_FRAMES = 12
 MAX_CHECK_THREADS = 6
 MAX_RULE_FRAMES = 24
 MAX_DETECT_FRAMES = 24
+MAX_POSES = 20            # people in one camera picture that get body points
 MAX_BEFORE_S = 900
 MAX_AFTER_S = 30
 MAX_ARM_S = 900
@@ -2724,11 +2725,14 @@ class App:
         return jpeg_bytes(into_panel(close_up(source, box)), 88) if source is not None else None
 
     def _rule_detect(self, rule, things=("person",), frames=(), camera=None, min_confidence=detect.MIN_CONFIDENCE,
-                     region=None, check=None):
+                     region=None, pose=False, check=None):
         """The local detector on each camera of some frames, for a rule's code. It calls no model, so it is
-        free, and the spend limit does not stop it. Boxes are from 0 to 1 in each camera's own picture."""
+        free, and the spend limit does not stop it. Boxes are from 0 to 1 in each camera's own picture. With
+        pose, each person also gets body points, and whether a hand is up, they lie down, or they sit."""
         if not detect.available():
             raise ValueError("The local detector is not installed on this server.")
+        if pose and not detect.pose_available():
+            raise ValueError("The body point model is not installed on this server.")
         labels = []
         for word in ([things] if isinstance(things, str) else list(things or []))[:8]:
             label = detect.label_for(word)
@@ -2750,8 +2754,12 @@ class App:
                 source = self._sharp_wall(name)
             if source is None:
                 return []
-            return [{"frame": name, "camera": cam, "label": item["label"], "confidence": item["confidence"],
-                     "box": list(item["box"]), "tall": item["tall"]} for item in detect.detect(source, labels, confidence, region)]
+            found = [{"frame": name, "camera": cam, "label": item["label"], "confidence": item["confidence"],
+                      "box": list(item["box"]), "tall": item["tall"]} for item in detect.detect(source, labels, confidence, region)]
+            people = [item for item in found if item["label"] == "person"][:MAX_POSES] if pose else []
+            for item, body in zip(people, detect.poses(source, [item["box"] for item in people])):
+                item["pose"] = body
+            return found
 
         with ThreadPoolExecutor(max_workers=detect.AT_ONCE) as pool:
             found = [item for items in pool.map(look, jobs) for item in items]

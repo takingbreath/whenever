@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import detect
 import server
 from PIL import Image
-from rule_runtime import Context, Found, Place, Tracker, center, foot, inside, overlap, place_of, share_inside
+from rule_runtime import (Context, Frame, Found, Line, Place, Tracker, beside, center, edge, foot, inside, overlap,
+                          place_of, share_inside)
 from test_occurrences import CAMERAS, Base, marked_wall, textured_wall
 from test_server import FakeRule
 
@@ -139,6 +140,98 @@ class RuleTools(unittest.TestCase):
         self.assertEqual(sent[2][1]["things"], ["people"])
 
 
+class Zones(unittest.TestCase):
+    def test_a_zone_beside_a_place_and_an_edge_for_a_line(self):
+        counter = Place("counter", "Hall", (0.4, 0.2, 0.6, 0.3))
+        queue = beside(counter, "below", 2.0)
+        self.assertEqual((queue.name, queue.camera), ("below counter", "Hall"))
+        self.assertEqual(tuple(round(v, 3) for v in queue.box), (0.4, 0.3, 0.6, 0.5))
+        self.assertEqual(beside(counter, "left", 3.0).box[0], 0.0)   # it stays in the picture
+        self.assertEqual(edge(counter, "bottom"), ((0.4, 0.3), (0.6, 0.3)))
+
+
+class Crossings(unittest.TestCase):
+    """People who walk through a doorway, a few looks a second."""
+
+    DOOR = Line("door", "Hall", (0.4, 0.5), (0.6, 0.5), inside=(0.5, 0.9))
+
+    def walk(self, ctx, steps, start=0.0, x=0.5, every=0.5):
+        """One person's feet at these heights, one look each, and their box above them."""
+        found = []
+        for i, y in enumerate(steps):
+            item = Found(Frame(f"f{start + i}", start + i * every), "Hall", "person", 0.9, (x - 0.03, y - 0.25, x + 0.03, y))
+            ctx.tracker.number([item], item.frame.t)
+            found.append(item)
+        return found
+
+    def test_one_walk_in_and_one_walk_out_count_once_each(self):
+        ctx = Context()
+        crossed = ctx.crossings(self.DOOR, self.walk(ctx, [0.3, 0.4, 0.47, 0.55, 0.65]))
+        self.assertEqual([c.direction for c in crossed], ["in"])
+        crossed = ctx.crossings(self.DOOR, self.walk(ctx, [0.7, 0.6, 0.52, 0.45, 0.35], start=10.0))
+        self.assertEqual([c.direction for c in crossed], ["out"])
+
+    def test_standing_on_the_line_does_not_count_again_and_again(self):
+        ctx = Context()
+        crossed = ctx.crossings(self.DOOR, self.walk(ctx, [0.45, 0.51, 0.49, 0.515, 0.485, 0.51]))
+        self.assertEqual(crossed, [])
+
+    def test_beside_the_door_or_a_repeated_call_does_not_count(self):
+        ctx = Context()
+        self.assertEqual(ctx.crossings(self.DOOR, self.walk(ctx, [0.3, 0.45, 0.6, 0.7], x=0.8)), [])
+        ctx = Context()
+        walk = self.walk(ctx, [0.3, 0.42, 0.55, 0.62])
+        self.assertEqual(len(ctx.crossings(self.DOOR, walk[:3])), 1)
+        self.assertEqual(ctx.crossings(self.DOOR, walk), [])   # the same frames again
+
+    def test_a_person_who_shrinks_as_they_walk_away_keeps_one_number(self):
+        tracker = Tracker()
+        boxes = [(0.5, 0.56, 0.57, 0.87), (0.53, 0.49, 0.59, 0.77), (0.51, 0.49, 0.55, 0.72),
+                 (0.46, 0.45, 0.51, 0.67), (0.43, 0.43, 0.47, 0.64)]   # real boxes from a gate at night
+        found = [Found(camera="Gate", label="person", box=box) for box in boxes]
+        for i, item in enumerate(found):
+            tracker.number([item], i * 0.6)
+        self.assertEqual(len({item.id for item in found}), 1)
+
+
+class Visits(unittest.TestCase):
+    def test_a_visit_starts_survives_a_short_gap_and_ends(self):
+        ctx = Context()
+        self.assertIsNone(ctx.visit("table 1", False, t=0))
+        self.assertEqual(ctx.visit("table 1", True, t=10), {"kind": "start", "key": "table 1", "t": 10.0, "empty_s": None})
+        self.assertIsNone(ctx.visit("table 1", False, t=20))   # a waiter hides the guests
+        self.assertIsNone(ctx.visit("table 1", True, t=25))
+        self.assertIsNone(ctx.visit("table 1", False, t=40))
+        ended = ctx.visit("table 1", False, t=60, gone_s=30)
+        self.assertEqual(ended, {"kind": "end", "key": "table 1", "start": 10.0, "end": 25.0, "seconds": 15.0})
+        later = Context(state=json.loads(json.dumps(ctx.state)))   # after a restart
+        self.assertEqual(later.visit("table 1", True, t=85)["empty_s"], 60.0)
+
+
+class Bodies(unittest.TestCase):
+    """Flags from body points, in pixels, as RTMPose gives them."""
+
+    def body(self, **moved):
+        points = {"nose": (100, 40), "left shoulder": (90, 80), "right shoulder": (110, 80),
+                  "left wrist": (85, 150), "right wrist": (115, 150), "left hip": (92, 160), "right hip": (108, 160),
+                  "left knee": (92, 240), "right knee": (108, 240), "left ankle": (92, 320), "right ankle": (108, 320)}
+        points.update(moved)
+        return [(*points[name], 0.9) if name in points else (0, 0, 0.0) for name in detect.KEYPOINTS]
+
+    def test_standing_sitting_lying_and_a_raised_hand(self):
+        self.assertEqual(detect.body_flags(self.body()), {"hand_up": False, "lying": False, "sitting": False})
+        self.assertTrue(detect.body_flags(self.body(**{"left knee": (60, 170), "right knee": (80, 172)}))["sitting"])
+        self.assertTrue(detect.body_flags(self.body(**{"right wrist": (118, 20)}))["hand_up"])
+        lying = self.body(**{"left shoulder": (40, 200), "right shoulder": (40, 215), "left hip": (120, 205),
+                             "right hip": (120, 218)})
+        self.assertTrue(detect.body_flags(lying)["lying"])
+
+    def test_hidden_knees_leave_sitting_unknown(self):
+        hidden = [point if name not in ("left knee", "right knee") else (0, 0, 0.1)
+                  for name, point in zip(detect.KEYPOINTS, self.body())]
+        self.assertIsNone(detect.body_flags(hidden)["sitting"])
+
+
 def fake_detector(seen):
     """Stands in for YOLOX: returns the boxes in seen, as from 0 to 1 in the picture it gets."""
     pictures = []
@@ -183,6 +276,17 @@ class ServerBlocks(Base):
         self.assertEqual(self.app.spend(), spent)
         everything = self.call("detect", things="person", frames=[name])
         self.assertEqual(len(everything["value"]), len(CAMERAS))
+
+    def test_detect_with_pose_adds_a_body_to_each_person(self):
+        name = self.frame()
+        self.seen.append((0.4, 0.4, 0.5, 0.7))
+        body = {"points": [(0.45, 0.45, 0.9)] * 17, "hand_up": True, "lying": False, "sitting": None}
+        with mock.patch.object(detect, "pose_available", lambda: True), \
+                mock.patch.object(detect, "poses", lambda picture, boxes: [body] * len(boxes)):
+            reply = self.call("detect", things=["person"], frames=[name], camera="Gate wide", pose=True)
+        self.assertEqual(reply["value"][0]["pose"]["hand_up"], True)
+        with mock.patch.object(detect, "pose_available", lambda: False):
+            self.assertIn("not installed", self.call("detect", things=["person"], frames=[name], pose=True)["error"])
 
     def test_detect_names_what_it_does_not_know_and_works_at_the_spend_limit(self):
         name = self.frame()

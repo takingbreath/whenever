@@ -228,7 +228,7 @@ about 0.1 s for each camera picture. Use it for how many and where, and a model 
 mean. This is how a rule watches many places at once and still costs little.
 
 ctx.detect(things="person", frames=None, camera=None, places=None, min_confidence=0.35, region=None,
-near=0.5) finds common things in each camera of each frame. Without frames, it uses the event's frames, or the
+near=0.5, pose=False) finds common things in each camera of each frame. Without frames, it uses the event's frames, or the
 newest frame in on_tick. things is a word or a list of the detector's kinds: person, car, truck, bus,
 bicycle, motorcycle, dog, cat, bird, chair, couch, bench, dining table, bed, cup, bottle, wine glass,
 bowl, fork, knife, spoon, laptop, cell phone, tv, book, backpack, handbag, suitcase, umbrella, potted
@@ -242,8 +242,13 @@ list of Place, sets each .place: the place that holds the thing's seat point (th
 box), or the nearest place less than near times that place's size away, so a person on a chair beside
 a table counts at that table. region, a box from 0 to 1, looks only there with more pixels, for small
 things far away. Call ctx.detect in time order with frames a few seconds apart or less, so that .id
-and .stayed can follow each thing. It can miss a thing that is mostly hidden, and it cannot say what
-a person does or who they are. For any other kind of thing, use ctx.find.
+and .stayed can follow each thing. pose=True also gives each person .pose, a dict with points (17
+body points from 0 to 1) and hand_up (a hand well above the shoulders, as someone who calls a waiter),
+lying (the body is flat, as someone who fell) and sitting, each True, False, or None when the body is
+hidden, such as knees under a table. It is free too, about 15 ms a person. It can miss a thing that is
+mostly hidden, and it cannot say what a person does or who they are. At night, under infrared light,
+it can take a chair or a plant for a person, so ask for a higher min_confidence or for movement. For
+any other kind of thing, use ctx.find. Never try to tell who a person is.
 
 ctx.places(thing, camera=None) returns every such thing in the cameras that stay still, such as
 "table", "door", "desk" or "parking space", each a Place with .name ("table 1", "table 2", numbered by
@@ -262,6 +267,25 @@ pass each other, so act on a steady count.
 
 ctx.since(key, true, t=None) returns how many seconds a condition has been true without a break, such
 as a table that is taken and not yet served, and 0 when it is false. ctx.state keeps each start.
+
+ctx.visit(key, present, t=None, gone_s=30) follows the visits at one place: guests at a table, a car in
+a parking space, a person at the host stand. A visit ends only after gone_s with nothing there, so a
+waiter who hides the guests does not split it. It returns None, or {"kind": "start", "key", "t",
+"empty_s"} (the seconds since the last visit ended, such as how long a table stood empty), or {"kind":
+"end", "key", "start", "end", "seconds"} (such as how long guests stayed). Record each end with
+ctx.record, so a report can show turnover, dining times and the longest waits.
+
+ctx.crossings(line, found) returns the things that crossed a Line, each a Found with .direction "in" or
+"out", for entries, exits and footfall. A Line(name, camera, a, b, inside) has two ends a and b and a
+point inside on the side that counts as in, each (x, y) from 0 to 1. edge(place, "bottom") gives the
+two ends of a place's edge, such as the threshold of a door from ctx.places("door"). A crossing counts
+when the middle of a thing's bottom edge goes clearly from one side to the other, between the ends, so
+people who stand on the line do not count again. It needs frames about 0.25 s apart: in on_tick, every
+5 s, pass ctx.detect("person", ctx.frames(before=5, count=20), camera=line.camera). Frames that it
+already counted are skipped. Place a line where people walk through, never where they sit or wait.
+beside(place, side, size) gives a Place next to another one, such as beside(counter, "below", 1.5) for
+the floor in front of a counter where people queue. You can also make a Place(name, camera, box) from
+your own numbers.
 
 ctx.check(claim, frames, place=...) with a Place or a Found shows the model only a close-up of that
 place, cut at full size from its camera. Use it to ask about one table, one door or one person, so
@@ -299,6 +323,21 @@ only about that place, with ctx.check and place. Record each number with ctx.rec
                                picture=best.frame, at=t)
             if not seated:
                 asked.pop(table.name, None)
+
+What people who run a place ask, and the blocks for each:
+- How many now, at each table, in a queue, outside: ctx.detect with places, and ctx.steady.
+- Which tables are free, how long guests stay, how long a table stays empty or dirty: ctx.visit, then
+  ctx.check with place when a visit ends, such as "This table is clean and empty."
+- Footfall, entries and exits by hour, group size (people who cross within a few seconds): ctx.crossings.
+- A queue that grows, or people who wait too long at a door or a counter: a zone from beside, a steady
+  count, and .stayed of each person in it.
+- Guests who call for staff: pose=True and hand_up on a steady id, then a close-up check. A person who
+  falls: lying, then a close-up check, then an alert at once.
+- Something left behind: a handbag, backpack, laptop or cell phone at a place where no person is.
+- Cars and riders outside: car, motorcycle and person at places, with ctx.visit for how long they stay.
+- What staff do, hygiene, spills, smoke, an open drawer or door: these need meaning, so use a sensor or
+  ctx.check, with a watch plan or a free count to decide when to pay.
+- A report at closing time: ctx.history of the records, with the arithmetic in Python and a chart.
 
 CAMERAS. With several cameras, each frame is a wall with one labeled tile for each camera. If the
 request names a place, say that tile's label in the sensor's question. The request lists the cameras
