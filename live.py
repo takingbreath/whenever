@@ -583,11 +583,13 @@ class Analyzer:
     def _arrived(self, cam, track, t, picture):
         """A named person or a returning visitor came: one "back" event a visit."""
         key = track.who["id"]
-        before = self.last_seen.get(key)
+        record = self.app.people.get(key) or {}
+        # Their sightings before this track count too, so a restart does not make them come in again.
+        earlier = [s["t"] for s in list(record.get("seen") or []) if s["t"] < track.first - 1]
+        before = max([self.last_seen.get(key) or 0.0] + earlier) or None
         self.last_seen[key] = t
         if before is not None and t - before < BACK_GAP_S:
             return
-        record = self.app.people.get(key) or {}
         count = len(people.visits(list(record.get("seen") or [])))
         if track.who.get("visitor"):
             if count < 2:
