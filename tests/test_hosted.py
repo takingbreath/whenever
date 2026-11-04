@@ -86,6 +86,13 @@ class DailySpend(Folder):
             app.writer_usd = 1
             self.assertTrue(app.stopped())
         app.writer_usd = 0
+        # A one-day extra for all the servers together moves only the shared limit.
+        day = str(app.spend_day)
+        with mock.patch.object(server, "SPEND_SHARED_EXTRA", f"{day}:5"), mock.patch.object(server, "SPEND_SHARED_USD", 10):
+            self.assertEqual(server.shared_limit(app.spend_day), 15)
+            self.assertEqual(server.spend_limit(app.spend_day), server.SPEND_LIMIT_USD)
+        with mock.patch.object(server, "SPEND_SHARED_EXTRA", f"{day}:5"):
+            self.assertEqual(server.shared_limit(app.spend_day), server.SPEND_LIMIT_USD + 5)
         # Yesterday's spend of the other server does not count.
         other.write_text(json.dumps({"day": "2000-01-01", "writer_usd": server.SPEND_LIMIT_USD}))
         app.others_read = (0.0, 0.0)

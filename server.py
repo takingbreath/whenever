@@ -267,6 +267,9 @@ SPEND_ALSO = tuple(Path(p.strip()) for p in os.environ.get("WHENEVER_SPEND_ALSO"
 # limit is also the limit for all of them. A demo has a small limit of its own and the owner's limit here,
 # so it can never use up the whole day's money of the real cameras.
 SPEND_SHARED_USD = float(os.environ.get("WHENEVER_SPEND_SHARED") or 0)
+# Extra money for all those servers together, for one day only, as "YYYY-MM-DD:USD", such as an evening of
+# trying the demo on top of the real cameras' budget.
+SPEND_SHARED_EXTRA = os.environ.get("WHENEVER_SPEND_SHARED_EXTRA") or ""
 # A demo plays recorded video all day. With no page open for this long, it stops paying for checks until a
 # visitor comes back. 0 means never, as on a real site, where the rules must keep watching.
 IDLE_PAUSE_S = float(os.environ.get("WHENEVER_IDLE_PAUSE_S") or 0)
@@ -517,10 +520,10 @@ def camera_sites(text, cameras):
     return sites
 
 
-def spend_extra(day):
+def spend_extra(day, extras=None):
     """The extra money that the owner gave for that day alone."""
     extra = 0.0
-    for item in SPEND_EXTRA.split(","):
+    for item in (SPEND_EXTRA if extras is None else extras).split(","):
         date, _, usd = item.strip().partition(":")
         if date == str(day):
             extra += number(usd, 0, 1000, 0)
@@ -533,8 +536,10 @@ def spend_limit(day):
 
 
 def shared_limit(day):
-    """A day's model budget for this server and the servers that share its budget."""
-    return SPEND_SHARED_USD + spend_extra(day) if SPEND_SHARED_USD else spend_limit(day)
+    """A day's model budget for this server and the servers that share its budget: the shared limit and
+    its own one-day extras, or without one, this server's own limit."""
+    base = SPEND_SHARED_USD if SPEND_SHARED_USD else spend_limit(day)
+    return base + spend_extra(day, SPEND_SHARED_EXTRA)
 
 
 def clean_watch(watch, pattern, target, starts_off):
