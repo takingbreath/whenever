@@ -1007,7 +1007,9 @@ def write_rule(client, folder, sentence, example=None, idle=None, progress=lambd
             if done:
                 return done, cost
             history.append({"type": "function_call_output", "call_id": call["call_id"], "output": output})
-    raise WriterError("Wonder did not finish the rule.")
+    error = WriterError("Wonder did not finish the rule.")
+    error.cost = cost   # the turns were paid for, so the day's spend must count them
+    raise error
 
 
 ACTION_PROMPT = """\

@@ -1816,6 +1816,8 @@ class App:
             self.save_rules()
             job.update(status="done", rule=rule_id, cost=round(cost, 3))
         except (writer.WriterError, ApiError, OSError, ValueError, KeyError) as e:
+            with self.lock:
+                self.writer_usd += getattr(e, "cost", 0.0)
             job.update(status="failed", error=str(e)[:300])
 
     def remove_rule(self, rule_id):

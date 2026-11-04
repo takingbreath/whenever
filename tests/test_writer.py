@@ -113,3 +113,14 @@ class Measure(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PaidTurns(unittest.TestCase):
+    def test_a_rule_that_wonder_never_finishes_still_counts_its_cost(self):
+        class Chatty:
+            def _post(self, body, timeout=0, retries=0):
+                return json.dumps({"output": [{"type": "message", "content": [{"text": "thinking"}]}],
+                                   "usage": {"input_tokens": 1000, "output_tokens": 100}}).encode()
+        with self.assertRaises(writer.WriterError) as caught:
+            writer.write_rule(Chatty(), Path("/nonexistent"), "Tell me when the gate opens.")
+        self.assertGreater(caught.exception.cost, 0)
