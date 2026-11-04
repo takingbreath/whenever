@@ -8,7 +8,8 @@ host="${1:?Usage: deploy/deploy.sh SSH_HOST}"
 cd "$(dirname "$0")/.."
 stage="/tmp/whenever-deploy"
 
-git ls-files --cached --others --exclude-standard > /tmp/whenever-files.txt
+# The video folder holds the working files of the demo video, not the app, and they change while it is made.
+git ls-files --cached --others --exclude-standard | grep -v '^video/' > /tmp/whenever-files.txt
 rsync -a --delete --files-from=/tmp/whenever-files.txt . "$host:$stage/"
 rm /tmp/whenever-files.txt
 # A demo server (deploy/demo/setup.sh) gets the same code. Its own data, keys and camera list stay.
