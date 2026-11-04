@@ -59,6 +59,16 @@ FACE_MATCH = {"arcface": 0.36, "sface": 0.45}
 FACE_SURE = 0.12          # this much above the match, a new face of the person is kept as one more sample
 FACE_SCORE = 0.75         # YuNet's confidence that it is a face
 MIN_FACE = 20             # pixels across, in the camera's own picture
+# A face names someone only when it is good enough. On the demo's recorded cameras, faces of 22 to 30
+# pixels that looked down, or the top of a head seen from above, scored up to 0.41 against other people
+# and were named at 85 to 99%. Our sure curve came from webcam faces that looked at the camera.
+MATCH_FACE_PX = 28        # smaller faces name nobody
+MATCH_FACE_SCORE = 0.85   # YuNet's confidence, for a face that names someone
+SURE_SMALL_PX = 40        # the industry's size to identify a person (250 pixels a metre, a 16 cm face)
+SURE_SMALL_CAP = 0.75     # a face smaller than that is at most this sure
+# An anonymous visitor is made and matched only from a face this large, so one poor face of a delivery
+# man does not become three visitors, nor a cafe guest one of them.
+VISITOR_FACE_PX = 40
 LOOK_HOURS = 12.0
 LOOK_MATCH = 0.90
 # A name that rests only on the operator's tag of clothes today, with no face of that person today, needs
@@ -90,6 +100,9 @@ PRIOR_WEIGHT = 20                 # the curve counts as this many answers, so a 
 MAX_SURE = 0.99                   # nothing is ever certain
 MIN_SURE = 0.6                    # a face match less sure than this names nobody
 LOOK_SAME_CAMERA, LOOK_OTHER_CAMERA = 0.9, 0.8   # a name carried by clothes is less sure than the face
+# Clothes carry a name on a camera where the person was seen today, but to another camera only this soon
+# after the last sighting: on the demo, a gate visitor's clothes named a cafe guest an hour later.
+CARRY_OTHER_CAMERA_S = 600.0
 VISITOR_NEW_BELOW = {"arcface": 0.25, "sface": 0.30}   # a new visitor only for a face like nobody known
 VISITOR_FACES = 10
 VISITOR_DAYS = 30
@@ -123,6 +136,27 @@ def _curve(points, x):
     return points[-1][1]
 
 
+def frontal(row):
+    """True when YuNet's 5 points look like a face toward the camera: two eyes apart, the nose between
+    them and below them, and the mouth below the nose. A face turned away, looking down, or the top of a
+    head seen from above fails."""
+    width = max(float(row[2]), 1.0)
+    (rx, ry), (lx, ly), (nx, ny) = (row[4], row[5]), (row[6], row[7]), (row[8], row[9])
+    mouth_y = (row[11] + row[13]) / 2
+    eyes = abs(lx - rx)
+    if eyes < 0.25 * width:
+        return False
+    if not min(rx, lx) - 0.1 * eyes <= nx <= max(rx, lx) + 0.1 * eyes:
+        return False
+    eye_y = (ry + ly) / 2
+    return ny - eye_y >= 0.1 * width and mouth_y - ny >= 0.05 * width
+
+
+def usable(face):
+    """True when a face from Faces.find may name someone: large and sure enough, and toward the camera."""
+    return bool(face) and face["size"] >= MATCH_FACE_PX and face["score"] >= MATCH_FACE_SCORE and face.get("frontal", True)
+
+
 def band_of(score, kind=FACE_MODEL):
     """Which of the measured score bands a score is in, from 0 (nobody) to 3 (sure)."""
     return sum(1 for edge in SURE_BANDS[kind] if score >= edge)
@@ -139,6 +173,8 @@ def sure_of(score, face_px=LARGE_FACE, kind=FACE_MODEL, counts=None):
         prior *= 0.85   # smaller than any face that was measured
     yes, no = counts or (0, 0)
     sure = (prior * PRIOR_WEIGHT + yes) / (PRIOR_WEIGHT + yes + no)
+    if face_px and face_px < SURE_SMALL_PX:
+        sure = min(sure, SURE_SMALL_CAP)
     return round(min(MAX_SURE, max(0.0, sure)), 3)
 
 
@@ -227,7 +263,7 @@ class Faces:
         row[5:14:2] += top
         if row[2] < MIN_FACE:
             return None
-        return {"row": [float(v) for v in row], "size": float(row[2]), "score": float(row[-1])}
+        return {"row": [float(v) for v in row], "size": float(row[2]), "score": float(row[-1]), "frontal": frontal(row)}
 
     def vector(self, picture, face):
         """512 numbers for a face from find, as a unit vector."""
@@ -299,7 +335,7 @@ class People:
         visitor = p.get("kind") == "visitor"
         return {"id": p["id"], "name": p["name"], "note": p.get("note", ""), "t": p["t"], "role": p.get("role", ""),
                 "kind": "visitor" if visitor else "person", "faces": len(p["faces"]), "looks": len(p["looks"]),
-                "picture": p.get("picture"), "seen": p["seen"][-1] if p["seen"] else None,
+                "picture": p.get("picture") or p.get("body"), "seen": p["seen"][-1] if p["seen"] else None,
                 "times_seen": len(p["seen"]), "visits": len(visits(p["seen"]))}
 
     def public(self):
@@ -370,7 +406,7 @@ class People:
         """The face and look numbers of a person in a picture (BGR numpy), and a face crop, as a dict."""
         face = self.faces.find(picture, box)
         found = {"face": None, "look": None, "face_size": face["size"] if face else 0.0, "crop": None}
-        if face:
+        if usable(face):
             found["face"] = self.faces.vector(picture, face)
             found["crop"] = self.faces.crop(picture, face)
         if look and self.embedder is not None and self.embedder.available():
@@ -411,6 +447,12 @@ class People:
             elif role is not None:
                 person["role"] = role
             self._add_samples(person, found, now, keep=True)
+            if found["face"] is None and box is not None:
+                # A tag of clothes alone keeps a picture of the body, so the page can show whom it tagged.
+                height, width = picture.shape[:2]
+                body = picture[max(0, int(box[1] * height)):int(box[3] * height), max(0, int(box[0] * width)):int(box[2] * width)]
+                if body.size:
+                    person["body"] = self._save_crop(person["id"], body, prefix="body", keep=3)
             self._save()
             return self._public(person)
 
@@ -485,6 +527,17 @@ class People:
                     best = (sure, seen.get("camera") or "")
         return best
 
+    def _near_in_place(self, person, camera, now):
+        """True when a look may name this person on this camera: they were seen on it today, or anywhere,
+        tag included, in the last CARRY_OTHER_CAMERA_S."""
+        times = [s["t"] for s in person["faces"] + person["looks"] if s.get("tag") and same_day(s["t"], now)]
+        for seen in person["seen"]:
+            if same_day(seen["t"], now) and not seen.get("wrong"):
+                if camera and seen.get("camera") == camera:
+                    return True
+                times.append(seen["t"])
+        return any(now - t < CARRY_OTHER_CAMERA_S for t in times)
+
     def _face_seen_today(self, person, now):
         """True when a face of the person was tagged or seen today, not only their clothes."""
         return any(s.get("tag") and same_day(s["t"], now) for s in person["faces"]) or any(
@@ -523,6 +576,8 @@ class People:
                 return None
             if scores[0][0] < LOOK_TAG_MATCH and not self._face_seen_today(scores[0][1], now):
                 return None
+            if not self._near_in_place(scores[0][1], camera, now):
+                return None
             factor = LOOK_SAME_CAMERA if camera and camera == today[1] else LOOK_OTHER_CAMERA
             return self._answer(scores[0][1], "look", scores[0][0], round(today[0] * factor, 3), found)
 
@@ -532,6 +587,8 @@ class People:
         answer = self.match(found, now, camera)
         if answer is not None or found["face"] is None:
             return answer
+        if (found.get("face_size") or 0) < VISITOR_FACE_PX:
+            return None   # too small to tell one stranger from another
         now = self.clock() if now is None else now
         kind = self.faces.kind
         with self.lock:
@@ -592,6 +649,9 @@ class People:
             if better:
                 last["picture"] = self._save_crop(person["id"], found["crop"], "seen", SIGHTING_PICTURES)
                 np.save(self.folder / person["id"] / (last["picture"][:-4] + ".npy"), np.asarray(found["face"], np.float32))
+            elif found.get("body") is not None and not last.get("picture"):
+                # A sighting by clothes keeps a picture of the body, so the person's page is not empty.
+                last["picture"] = self._save_crop(person["id"], found["body"], "seen", SIGHTING_PICTURES)
             sure_face = match["by"] == "face" and score >= FACE_MATCH[self.faces.kind] + FACE_SURE
             if visitor and match["by"] == "face" and score >= FACE_MATCH[self.faces.kind]:
                 self._add_samples(person, found, now)

@@ -218,6 +218,32 @@ class Analyzer(unittest.TestCase):
         today = self.app.people.today(0, 100)
         self.assertEqual((today[0]["name"], today[0]["cameras"]), ("Asha", ["Cafe"]))
 
+    def test_an_alert_names_only_the_person_it_is_about(self):
+        self.faces.stop()
+        self.faces = mock.patch.object(live.people, "available", lambda: True)
+        self.faces.start()
+        array = np.zeros((64, 64, 3), np.uint8)
+        array[0, 0, 0] = 7
+        self.app.people.tag("Asha", array)
+        for t in (1, 2, 3, 4):
+            self.look(t, [person(GUEST)], picture=frame_picture(7))
+        self.look(5, [person(GUEST), person((0.70, 0.30, 0.80, 0.60))])
+        here = ("Cafe", (0.05, 0.45, 0.30, 0.75), True)        # the table that Asha sits at
+        there = ("Cafe", (0.65, 0.25, 0.85, 0.65), True)       # a table with a stranger
+        self.assertEqual([p["name"] for p in self.live.alert_people(["Cafe"], 5, subject=here)["people"]], ["Asha"])
+        self.assertEqual(self.live.alert_people(["Cafe"], 5, subject=there)["people"], [])
+        # With no subject and nobody who just came in, an alert an hour later names nobody.
+        for t in (3600, 3601):
+            self.look(t, [person(GUEST), person((0.70, 0.30, 0.80, 0.60))])
+        self.assertEqual(self.live.alert_people(["Cafe"], 3601)["people"], [])
+
+    def test_an_alert_story_keeps_each_moment_once(self):
+        for t in (10, 50, 90):
+            self.live._event("Cafe", "seated", "T5 seated", None, None, GUEST, t)
+        self.live._event("Cafe", "hand_up", "T1 hand up", None, None, GUEST, 95)
+        story = self.live.alert_people(["Cafe"], 100, subject=("Cafe", (0.05, 0.45, 0.30, 0.75), True))["story"]
+        self.assertEqual([s["text"] for s in story], ["T5 seated", "T1 hand up"])
+
     def test_clothes_carry_a_name_to_another_camera_less_surely(self):
         self.faces.stop()
         self.faces = mock.patch.object(live.people, "available", lambda: True)
@@ -241,6 +267,28 @@ class Analyzer(unittest.TestCase):
         evidence = self.live.alert_people(["Gate"], 48)["people"][0]["evidence"]
         self.assertEqual([e["kind"] for e in evidence], ["clothes", "tracker"])
         self.assertTrue(evidence[0]["text"].endswith("2 cameras"))
+
+    def test_clothes_carry_a_name_to_another_camera_only_soon_after(self):
+        self.faces.stop()
+        self.faces = mock.patch.object(live.people, "available", lambda: True)
+        self.faces.start()
+        self.app.embedder = FakeLooks()
+        array = np.zeros((64, 64, 3), np.uint8)
+        array[0, 0, 0] = 7
+        self.app.people.tag("Asha", array)
+        box = (0.40, 0.30, 0.50, 0.70)
+        green = (20, 200, 20)
+        for t in range(1, 8):
+            self.look(t, [person(box, 3.0)], picture=frame_picture(7, green))
+        while self.live.looks:
+            self.live.add_look(*self.live.looks.popleft())
+        late = 8 + live.people.CARRY_OTHER_CAMERA_S
+        for t in range(int(late), int(late) + 8):
+            self.look(t, [person(box, 3.0)], camera="Gate", picture=frame_picture(0, green))
+        while self.live.looks:
+            self.live.add_look(*self.live.looks.popleft())
+        out = self.look(late + 8, [person(box, 3.0)], camera="Gate", picture=frame_picture(0, green))
+        self.assertIsNone(out["cameras"]["Gate"]["people"][0]["name"], "an hour later, clothes on another camera name nobody")
 
     def test_a_tag_of_clothes_today_names_a_track_by_look(self):
         self.app.embedder = FakeLooks()   # the same look numbers as the tag's
@@ -414,7 +462,8 @@ class Alerts(unittest.TestCase):
         name = self.frame(100.0)
         self.client.marks = [{"x1": 10, "y1": 10, "x2": 60, "y2": 90, "w": 640, "h": 360, "c": 0.9,
                               "path": "M10 10L60 10L60 90L10 90L5 50L10 30L12 20L11 15Z", "mask_w": 640, "mask_h": 360}]
-        self.app.analyzer.alert_people = lambda cameras, t: {
+        subjects = []
+        self.app.analyzer.alert_people = lambda cameras, t, subject=None: subjects.append(subject) or {
             "people": [{"person_id": "p1", "name": "Asha", "role": "", "sure": 0.9, "by": "face", "evidence": [],
                         "tag_face": None, "now_face": None, "sighting": "s1"}],
             "story": [{"t": 99.0, "text": "T3 hand up", "picture": None}]}
@@ -424,6 +473,7 @@ class Alerts(unittest.TestCase):
         self.app._notify(self.rule, "T3 calls for staff", name, to="Waiter",
                          subject={"camera": "", "box": [0.02, 0.03, 0.09, 0.25]})
         self.assertEqual(self.app.see_calls - before, 1)
+        self.assertEqual(subjects, [("", (0.02, 0.03, 0.09, 0.25), False)], "the card is about the Found only")
         self.assertEqual(self.client.marked, [{"x1": 13, "y1": 11, "x2": 58, "y2": 90}])
         self.assertEqual(told, ["Waiter"])
         row = [r for r in self.app.journal.history("notify")][-1]

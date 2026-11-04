@@ -66,10 +66,13 @@ HAND_LOOKS = 2
 TOLD_S = 30.0
 FACE_EVERY_S = 1.0
 FACE_BETTER = 1.1         # a face this much clearer than the track's best is worth the face model
+ALERT_PEOPLE = 2          # people on one alert's card, at most
+ALERT_SURE = 0.7          # with no clear subject, an alert names only people this sure
+ARRIVED_S = 120.0         # ... who came in this soon before it
 FACE_KEEP = 3
 SURE_ENOUGH = 0.95        # a track this sure looks for faces only now and then
 MIN_PERSON_PX = 60        # a smaller person cannot show a face of MIN_FACE pixels
-CLEAR_FACE_PX, CLEAR_FACE_SCORE, CLEAR_SHARP = 28, 0.85, 0.3   # a new visitor needs such a face
+CLEAR_FACE_SCORE, CLEAR_SHARP = 0.9, 0.3   # with people.VISITOR_FACE_PX, a new visitor needs such a face
 LOOK_STABLE_S = 4.0
 LOOK_EVERY_S = 60.0
 LOOK_QUEUE = 8
@@ -119,6 +122,23 @@ def sharpness(crop):
     import cv2
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     return 0.2 + min(1.0, float(cv2.Laplacian(gray, cv2.CV_64F).var()) / 300.0)
+
+
+def _about(camera, box, subject):
+    """True when a person's or an event's box on a camera is what an alert is about: in a pointed place, its
+    seat point is in the place (grown a little); for a Found, the boxes overlap well or its middle is in it."""
+    where, area, place = subject
+    if (where and camera != where) or not box or not area:
+        return False
+    x1, y1, x2, y2 = area
+    if place:
+        grow_x, grow_y = (x2 - x1) * 0.15, (y2 - y1) * 0.15
+        x, y = (box[0] + box[2]) / 2, box[1] + 0.75 * (box[3] - box[1])
+        return x1 - grow_x <= x <= x2 + grow_x and y1 - grow_y <= y <= y2 + grow_y
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    inner = max(0.0, min(x2, box[2]) - max(x1, box[0])) * max(0.0, min(y2, box[3]) - max(y1, box[1]))
+    union = (x2 - x1) * (y2 - y1) + (box[2] - box[0]) * (box[3] - box[1]) - inner
+    return inner / max(union, 1e-9) >= 0.3 or (x1 <= cx <= x2 and y1 <= cy <= y2)
 
 
 def group_tables(votes, looks, share=TABLE_SHARE):
@@ -526,8 +546,8 @@ class Analyzer:
         for track in tracks:
             track.face_t = t
             face = book.faces.find(bgr, track.box)
-            if not face:
-                continue
+            if not people.usable(face):
+                continue   # too small, unsure, or not toward the camera: it names nobody
             crop = book.faces.crop(bgr, face)
             if crop is None:
                 continue
@@ -540,7 +560,9 @@ class Analyzer:
             track.faces = sorted(track.faces + [{"q": quality, "size": face["size"], "score": face["score"], "t": t}],
                                  key=lambda f: f["q"])[-FACE_KEEP:]
             found = {"face": vector, "look": None, "face_size": face["size"], "crop": crop}
-            clear = face["size"] >= CLEAR_FACE_PX and face["score"] >= CLEAR_FACE_SCORE and sharp >= CLEAR_SHARP
+            # One track is one person: a track that already has a name or a visitor makes no new visitor.
+            clear = face["size"] >= people.VISITOR_FACE_PX and face["score"] >= CLEAR_FACE_SCORE and \
+                sharp >= CLEAR_SHARP and track.who is None
             match = book.identify(found, cam.name, t, clear)
             self._save_face(track, crop)
             if match is None:
@@ -612,6 +634,7 @@ class Analyzer:
 
     def add_look(self, camera, number, crop, t, area):
         """The look of one track: kept for a search in words, and used to carry a name across cameras."""
+        import numpy as np
         from PIL import ImageOps
         embedder = self.app.embedder
         if embedder is None or not embedder.available():
@@ -628,7 +651,9 @@ class Analyzer:
                 track.crop = f"crops/{number}.jpg"
                 (self.folder / track.crop).write_bytes(_jpeg(crop, CROP_SIDE))
             self._new_day(t)
-            if track.who and track.who.get("by") == "face" and (track.who.get("sure") or 0) >= people.MIN_SURE:
+            # Only a tagged person's clothes carry a name. A visitor is known by face alone.
+            if track.who and track.who.get("by") == "face" and (track.who.get("sure") or 0) >= people.MIN_SURE \
+                    and not track.who.get("visitor"):
                 self.day_looks.setdefault(track.who["id"], []).append(
                     {"v": vector, "camera": camera, "sure": track.who["sure"], "t": t, "who": dict(track.who)})
                 self.day_looks[track.who["id"]] = self.day_looks[track.who["id"]][-people.MAX_LOOKS:]
@@ -637,6 +662,7 @@ class Analyzer:
                 if track.who is None:
                     self._tagged_look(cam, track, vector, t)
             carried = dict(track.who) if track.who and track.who.get("by") == "look" and not track.sighting else None
+            body = np.asarray(crop.convert("RGB"))[:, :, ::-1].copy() if carried else None
             row = self._track_row(track)
         with self.db_lock:
             self._save_tracks([row])
@@ -644,7 +670,7 @@ class Analyzer:
         if carried:
             # A name from clothes is a sighting too, so the person's page shows it, by look.
             sighting = self.app.people.saw(dict(carried, score=carried.get("score") or 0.0, face_px=0),
-                                           {"face": None, "look": None, "crop": None}, camera, now=t)
+                                           {"face": None, "look": None, "crop": None, "body": body}, camera, now=t)
             with self.lock:
                 track.sighting = sighting
 
@@ -671,7 +697,10 @@ class Analyzer:
         for key, items in self.day_looks.items():
             if key in here:
                 continue   # that person is in view on another track
-            recent = [item for item in items if t - item["t"] < people.LOOK_HOURS * 3600]
+            # Clothes carry a name for the day on the same camera, but to another camera only for a short
+            # while: on the demo a gate visitor's clothes named a cafe guest an hour later.
+            recent = [item for item in items if t - item["t"] < people.LOOK_HOURS * 3600 and
+                      (item["camera"] == cam.name or t - item["t"] < people.CARRY_OTHER_CAMERA_S)]
             if recent:
                 likeness = np.array([item["v"] for item in recent], np.float32) @ vector
                 best = int(likeness.argmax())
@@ -897,7 +926,7 @@ class Analyzer:
             except (OSError, ValueError):
                 path = None
         event = {"t": round(t, 2), "camera": camera, "kind": kind, "text": str(text)[:120], "person": person,
-                 "picture": path}
+                 "picture": path, "box": [round(float(v), 4) for v in box] if box else None}
         self.events.append(event)
         with self.db_lock:
             self.db.execute("INSERT INTO events (t, camera, kind, text, person, picture) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1035,24 +1064,42 @@ class Analyzer:
                 "max": round(float(total.max()), 1)}
 
     # ----- alerts -----
-    def alert_people(self, cameras, t, around_s=5.0):
-        """The named people and visitors that these cameras saw within a few seconds of an alert, with why
-        Whenever thinks it is them, and 3 or 4 moments of the 2 minutes before it."""
-        found, story = [], []
+    def alert_people(self, cameras, t, around_s=5.0, subject=None):
+        """The people an alert is about, with why Whenever thinks it is them, and up to 4 moments of the 2
+        minutes before it about the same subject. subject, (camera, box, place), is what the alert is
+        about: a Found that the rule passed (place False) or the thing the person pointed at, such as a
+        table (place True). Without one, it is the only raised hand or named person in view, or else the
+        surest people who came in just before. Other people in view are left out: a cafe alert once listed
+        four guests who had nothing to do with it."""
+        found = []
         with self.lock:
             names = cameras or self._names()
             tracks = [tr for name in names for tr in (self.cameras[name].tracks.values() if name in self.cameras else [])
                       if tr.who and tr.first - around_s <= t <= tr.last + around_s]
+            if subject:
+                tracks = [tr for tr in tracks if _about(tr.camera, tr.box, subject)]
+            else:
+                one = self._subject_track(names, t)
+                tracks = ([one] if one.who else []) if one is not None else \
+                    [tr for tr in tracks if (tr.who.get("sure") or 0) >= ALERT_SURE and t - tr.first <= ARRIVED_S]
             best = {}
             for track in tracks:
                 key = track.who["id"]
                 if key not in best or (track.who.get("sure") or 0) > (best[key].who.get("sure") or 0):
                     best[key] = track
-            for track in sorted(best.values(), key=lambda tr: -(tr.who.get("sure") or 0))[:4]:
+            for track in sorted(best.values(), key=lambda tr: -(tr.who.get("sure") or 0))[:ALERT_PEOPLE]:
                 found.append(self._evidence(track, t))
             moments = [e for e in self.events if e["camera"] in names and t - 120 <= e["t"] <= t + 1 and e["kind"] != "alert"]
-        chosen = sorted(moments, key=lambda e: (e["kind"] in ("back", "hand_up", "told", "seated"), e["t"]))[-4:]
-        story = [{"t": e["t"], "text": e["text"], "picture": self.url(e["picture"])} for e in sorted(chosen, key=lambda e: e["t"])]
+        who = {person["name"] for person in found}
+        if subject:
+            moments = [e for e in moments if e.get("box") and _about(e["camera"], e["box"], subject)]
+        else:
+            moments = [e for e in moments if e.get("person") in who or e["kind"] in ("hand_up", "told")]
+        latest = {}
+        for e in moments:   # the same words twice, such as "T5 seated" after each loop, are one moment
+            latest[e["text"]] = e
+        chosen = sorted(latest.values(), key=lambda e: e["t"])[-4:]
+        story = [{"t": e["t"], "text": e["text"], "picture": self.url(e["picture"])} for e in chosen]
         if len(story) < 3:
             for person in found:
                 told = any(item["text"].startswith(f"{person['name']} ") for item in story)   # it came in already
@@ -1083,7 +1130,9 @@ class Analyzer:
         evidence.append({"kind": "tracker", "text": f"followed for {max(1, round(minutes))} min" if minutes >= 0.5
                          else "followed for under a minute"})
         record = self.app.people.get(who["id"]) or {}
-        tag_face = f"/people-file/{who['id']}/{record['picture']}" if record.get("picture") else None
+        visitor = record.get("kind") == "visitor"
+        picture = record.get("picture") or record.get("body")
+        tag_face = f"/people-file/{who['id']}/{picture}" if picture else None
         # When the operator tagged them (None for a visitor), and their answer on this sighting, if any.
         tags = [s["t"] for s in list(record.get("faces") or []) + list(record.get("looks") or []) if s.get("tag")]
         tagged = None if record.get("kind") == "visitor" else (min(tags) if tags else record.get("t"))
@@ -1092,7 +1141,9 @@ class Analyzer:
         name = who.get("visitor") or who.get("name")
         return {"person_id": who["id"], "name": name, "role": who.get("role") or "", "sure": who.get("sure"),
                 "by": who.get("by"), "evidence": evidence, "tag_face": tag_face, "now_face": now_face,
-                "sighting": track.sighting, "tagged": tagged,
+                "sighting": track.sighting, "tagged": tagged, "visitor": visitor,
+                "first_seen": record.get("t") if visitor else None,
+                "tag_body": bool(tag_face and not record.get("picture")),
                 "confirmed": {"yes": True, "no": False}.get(answer),
                 "arrived": {"t": round(track.first, 2), "text": f"{name} arrived", "picture": now_face or self.url(track.crop)}}
 
@@ -1100,13 +1151,18 @@ class Analyzer:
         """(camera, box) of the one person an alert is clearly about: the only raised hand, or else the only
         named person, on these cameras near time t. None when it is not clear."""
         with self.lock:
-            names = cameras or self._names()
-            near = [tr for name in names for tr in (self.cameras[name].tracks.values() if name in self.cameras else [])
-                    if tr.label == "person" and abs(tr.last - t) <= 5]
+            track = self._subject_track(cameras or self._names(), t)
+        return (track.camera, tuple(track.box)) if track is not None else None
+
+    def _subject_track(self, names, t):
+        """The track of the only raised hand, or else of the only named person, near time t, or None.
+        The caller holds the lock."""
+        near = [tr for name in names for tr in (self.cameras[name].tracks.values() if name in self.cameras else [])
+                if tr.label == "person" and abs(tr.last - t) <= 5]
         for pick in ([tr for tr in near if tr.hand_since is not None or (tr.hand_end and t - tr.hand_end <= TOLD_S)],
                      [tr for tr in near if tr.who and (tr.who.get("sure") or 0) >= 0.5]):
             if len(pick) == 1:
-                return pick[0].camera, tuple(pick[0].box)
+                return pick[0]
         return None
 
     # ----- keeping it small -----

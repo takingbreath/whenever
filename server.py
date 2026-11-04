@@ -2459,7 +2459,7 @@ class App:
                 media = self.alert_media(rule, picture, occurrence, clip=False)
                 title = inputs.get("title") or self._alert_title(rule, media)
                 # The page shows the alert at once, as the phone does.
-                seen = self._alert_people(media, text)
+                seen = self._alert_people(media, text, rule=rule)
                 self.add_feed(rule, "alert", text, url=media["url"], cameras=media["cameras"], occurrence=occurrence,
                               clip_start=self.clip_start(media.get("when") or time.time(), media["cameras"]), **seen)
                 places, how = self._deliver(rule, occurrence, text, title, media)
@@ -2514,7 +2514,7 @@ class App:
         except (ValueError, OSError) as e:
             media = {"picture": None, "url": self.picture_url(rule, picture), "cameras": []}
             self.trouble(rule, f"{rule.name} could not cut its picture", str(e)[:300], source="Alerts", level="note")
-        seen = self._alert_people(media, text, to)
+        seen = self._alert_people(media, text, to, rule, subject)
         # A later note about an occurrence that already alerted, with nothing new to see, stays on the page.
         news = bool(picture) or not (occurrence and occurrence in self.threads)
         if news:
@@ -2531,15 +2531,25 @@ class App:
                       occurrence=occurrence, places=[p["label"] for p in places if p["ok"]], mode=how,
                       sent_at=round(media.get("sent_at") or 0, 1) or None, clip_start=media.get("clip_start"), **seen)
 
-    def _alert_people(self, media, text, to=None):
+    def _alert_people(self, media, text, to=None, rule=None, subject=None):
         """What the live analyzer saw around an alert: {"people", "story"} for the page, or {}. An alert to
-        named places while a hand is up marks that person as told."""
+        named places while a hand is up marks that person as told. The people are only those the alert is
+        about: the Found that the rule passed as subject, or else the thing that the person pointed at."""
         when = media.get("when") or time.time()
         cameras = media.get("cameras") or []
+        about = None
+        if subject and subject.get("box"):
+            about = (str(subject["camera"]), tuple(float(v) for v in subject["box"][:4]), False)
+        else:
+            pointed = getattr(rule, "pointed", None) or {}
+            box = pointed.get("box") or {}
+            if pointed.get("camera") and box.get("w") and box.get("h") and self.camera_kind(pointed["camera"]) == "fixed":
+                about = (pointed["camera"], (box["x1"] / box["w"], box["y1"] / box["h"], box["x2"] / box["w"],
+                                             box["y2"] / box["h"]), True)
         try:
             if to:
                 self.analyzer.told(to, cameras, when)
-            seen = self.analyzer.alert_people(cameras, when)
+            seen = self.analyzer.alert_people(cameras, when, subject=about)
             self.analyzer.note_alert(cameras, text, when)
         except (OSError, ValueError, sqlite3.Error) as e:
             self.problems.add("analyzer:alert", "The live analyzer could not add people to an alert", "note",

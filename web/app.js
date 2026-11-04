@@ -2638,7 +2638,11 @@ function roleChips(box, current, onPick) {
 function whoNode(who) {
   const box = element("div", "who");
   const head = element("div", "who-head");
-  head.append(element("b", null, who.name ? `Is this ${who.name}?` : "Is this the same person?"));
+  const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // A visitor was never tagged: ask whether it is the same person as when Whenever first saw them.
+  const question = who.visitor && who.first_seen ? `Same person as at ${clock(who.first_seen)}?`
+    : who.name ? `Is this ${who.name}?` : "Is this the same person?";
+  head.append(element("b", null, question));
   if (who.role) head.append(roleBadge(who.role));
   box.append(head);
   const faces = element("div", "who-faces");
@@ -2652,7 +2656,9 @@ function whoNode(who) {
     figure.append(img, element("figcaption", null, label));
     return figure;
   };
-  const tagged = who.tagged ? `Tagged ${new Date(who.tagged * 1000).toLocaleDateString([], { day: "numeric", month: "short" })}` : "Tagged";
+  const day = who.tagged ? ` ${new Date(who.tagged * 1000).toLocaleDateString([], { day: "numeric", month: "short" })}` : "";
+  const tagged = who.visitor ? (who.first_seen ? `First seen ${clock(who.first_seen)}` : "First seen")
+    : who.tag_body ? `Tagged by clothes${day}` : `Tagged${day}`;
   if (who.tag_face) faces.append(face(who.tag_face, tagged));
   if (who.now_face) faces.append(face(who.now_face, "Now"));
   if (faces.childNodes.length) box.append(faces);
