@@ -2121,8 +2121,15 @@ function composeSentence() {
   const extra = $("then-extra").value.trim().replace(/[.\s]+$/, "");
   if (extra) phrases.push(extra);
   if (editing) return phrases.length ? `${trigger}. Also ${joinList(phrases)}.` : `${trigger}.`;
-  trigger = trigger.replace(/^(when|whenever|if)\s+/i, "");
   const cams = [...camerasPicked];
+  // A whole instruction, such as "Send me a notification whenever someone sits here", stays as it is:
+  // "When send me ..." reads wrong. The cameras and the extra actions follow as sentences of their own.
+  if (/^(tell|send|notify|alert|let|remind|show|count|track|record|keep|watch|give|message|text|email|warn|every|each)\b/i.test(trigger)) {
+    const where = cams.length ? ` Watch ${joinList(cams)}.` : "";
+    const also = phrases.length ? ` Also ${joinList(phrases)}.` : "";
+    return `${trigger.charAt(0).toUpperCase()}${trigger.slice(1)}.${where}${also}`;
+  }
+  trigger = trigger.replace(/^(when|whenever|if)\s+/i, "");
   const where = cams.length ? ` in ${joinList(cams)}` : "";
   const then = phrases.length ? `, then ${joinList(phrases)}` : "";
   return `When ${trigger}${where}${then}.`;

@@ -211,6 +211,13 @@ people or things may be in view, name which one, and pass reference: a Frame tha
 ctx.event.proof, or a picture in your folder, such as ctx.pointed["reference"]. Never call a picture clear, or show it as proof, until a Check on that exact frame
 has passed. If nothing passes, keep waiting or say that you found no good picture.
 
+Alert at once. ctx.event.proof is the frame that the sensor's own paid check passed, so it already shows
+the event: send the alert with it straight away, such as ctx.notify("Someone opened the gate",
+picture=ctx.event.proof). Do not run another ctx.check on the event before alerting. On the demo, that
+second check made each gate alert arrive 30 s late, after the gate had closed again, and doubled the cost.
+Look for a better picture only for what the event does not show, such as a clear face, and send it after,
+as a second notify with the same at=, so it joins the first alert.
+
 ctx.gallery(thing, frames=None, count=6, caption="") shows a person a row of zoomed pictures of a thing,
 such as "face" or "person", found across frames and ordered best first. A click on one opens its full
 frame. It uses real pixels only. It returns the pictures, or [] if the thing is in no frame. Whenever
@@ -721,7 +728,10 @@ def review_rule(client, sentence, sensors, code):
             "5. GUESS AS FACT: the code shows a weak or failed answer as a fact.\n"
             "6. UNCHECKED CLAIM: the code calls a picture clear or correct, or shows it as proof, with no "
             "passed ctx.check on that exact frame. A ctx.ask over several frames confirms nothing about "
-            "one frame, and a sensor firing does not confirm it either. A claim for a clear picture of a "
+            "one frame. A sensor firing confirms only its own question in ctx.event.proof: that frame may be "
+            "the alert's picture at once, but it does not confirm a clear face or a detail that the sensor "
+            "did not ask about. A second check of the event before the first alert is not needed: it makes "
+            "the alert late. A claim for a clear picture of a "
             "person must ask for the person in view, nothing cut off, and not badly blurred. It asks for eyes or a "
             "face only for a camera close to people, such as a desk or a door camera. A Found whose .who came "
             "by face is proof of who is in its own frame and box, as a passed check is, so its frame can "
