@@ -1,0 +1,25 @@
+{
+ "labelled": "2026-11-05 03:40 IST, by the builder, from the footage, before any run",
+ "rules": {
+  "gate": "Tell me when someone opens the gate, with the picture.",
+  "hand": "When someone raises a hand to call for attention, alert the Waiter at once. If nobody comes to them within 1 minute, alert the Manager."
+ },
+ "cases": [
+  {"id": "G01", "rule": "gate", "source": "real gate camera (wide), 2026-11-04 16:18:20 IST, 40 s", "alert": true,  "event_s": 11, "note": "Day. A man walks to the gate and opens one leaf to talk to people outside."},
+  {"id": "G02", "rule": "gate", "source": "real gate camera (wide), 2026-11-04 16:25:25 IST, 40 s", "alert": true,  "event_s": 10, "note": "Day, sun glare. A man opens the gate and walks back."},
+  {"id": "G03", "rule": "gate", "source": "real gate camera (wide), 2026-11-04 17:49:05 IST, 40 s", "alert": true,  "event_s": 12, "note": "Day. Two people at the gate close together; the gate opens and a woman comes in."},
+  {"id": "G04", "rule": "gate", "source": "real gate camera (wide), 2026-11-04 20:56:10 IST, 40 s", "alert": true,  "event_s": 0,  "note": "Night. A man is opening the gate; a car drives in with headlights; red tail lights; he closes it."},
+  {"id": "G05", "rule": "gate", "source": "real gate camera (wide), 2026-11-04 21:43:40 IST, 50 s", "alert": true,  "event_s": 15, "note": "Night. A man opens the gate; a car drives in with headlights. One opening: one alert."},
+  {"id": "G06", "rule": "gate", "source": "real gate camera (wide), 2026-11-04 20:02:30 IST, 40 s", "alert": false, "note": "Night. Red tail-light glow moves over the closed gate. Lighting change only."},
+  {"id": "G07", "rule": "gate", "source": "real gate camera (wide), 2026-11-04 21:35:35 IST, 40 s", "alert": false, "note": "Night. Closed gate, small light changes, nobody."},
+  {"id": "G08", "rule": "gate", "source": "real gate camera (wide), 2026-11-04 23:49:05 IST, 40 s", "alert": false, "note": "Night. Headlights outside, the camera switches from infrared to colour, a person outside; the gate stays closed."},
+  {"id": "G09", "rule": "gate", "source": "real gate camera (wide), 2026-11-04 17:31:00 IST, 30 s", "alert": false, "note": "Day. A cyclist passes outside; the gate stays closed."},
+  {"id": "G10", "rule": "gate", "source": "real gate camera (wide), 2026-11-04 17:05:25 IST, 35 s", "alert": false, "note": "Day, glare. A motorcycle passes outside; the gate stays closed."},
+  {"id": "G11", "rule": "gate", "source": "real gate camera (wide), 2026-11-04 19:26:05 IST, 40 s", "alert": true,  "event_s": 12, "note": "Dusk. A man opens the gate and walks in; the camera switches to infrared."},
+  {"id": "H3",  "rule": "hand", "source": "real webcam, 2026-11-01, 19 s", "alert": false, "note": "A man holds a phone to his ear, then faces the camera."},
+  {"id": "H4",  "rule": "hand", "source": "real webcam, 2026-10-30, 18 s", "alert": false, "note": "A man rests a hand on his head and scratches it."},
+  {"id": "H5",  "rule": "hand", "source": "real webcam, 2026-11-02, 14 s", "alert": true,  "event_s": 4, "note": "A man raises an open palm above his head, then stretches and drinks from a bottle. One alert."},
+  {"id": "H6",  "rule": "hand", "source": "real webcam, 2026-10-30, 14 s", "alert": true,  "event_s": 4, "note": "Two people: a man in front raises his arm and waves; another person sits behind with a laptop. One alert."},
+  {"id": "H7",  "rule": "hand", "source": "AI-made cafe video (the owner's), 43 s", "alert": false, "note": "A seated couple talks; the man gestures at table height; a waiter brings food at 24 s. No raised hand."}
+ ]
+}
