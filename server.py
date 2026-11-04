@@ -2498,6 +2498,11 @@ class App:
                 text = inputs.get("text") or rule.name
                 if self.repeated(occurrence, text):
                     return {"ok": True, "status": 200, "how": "repeat", "reply": "Already sent a moment ago."}
+                if self.quiet(rule, f"phone:{text}"):
+                    # The same quiet time as ctx.notify: a rule that alerts the phone through the action
+                    # still buzzed it on every loop of the demo.
+                    return {"ok": True, "status": 200, "how": "quiet",
+                            "reply": "Not sent: the same alert went out a few minutes ago."}
                 media = self.alert_media(rule, picture, occurrence, clip=False)
                 title = inputs.get("title") or self._alert_title(rule, media)
                 # The page shows the alert at once, as the phone does.

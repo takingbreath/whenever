@@ -530,6 +530,11 @@ class Alerts(unittest.TestCase):
         quiet = [i for i in self.app.feed if i["kind"] == "notify" and i.get("mode") == "quiet"]
         self.assertEqual(len(quiet), 1)
 
+    def test_the_phone_action_keeps_the_quiet_time_too(self):
+        with mock.patch.object(self.server, "ALERT_QUIET_S", 900):
+            self.assertFalse(self.app.quiet(self.rule, "phone:Someone sat at the round table"))
+            self.assertTrue(self.app.quiet(self.rule, "phone:Someone sat at the round table"))
+
     def test_a_clip_of_saved_frames_starts_at_its_first_frame(self):
         for t in (96.0, 97.5, 99.0, 101.0):
             self.frame(t)
