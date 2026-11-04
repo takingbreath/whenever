@@ -1916,6 +1916,9 @@ class App:
 
     def start_job(self, sentence, example, idle, motions=None, gap_s=None, point=None, edit=None):
         """edit is the id of a live rule to replace. That rule keeps running until the new one passes."""
+        if self.stopped():
+            # Wonder costs money too, so it stops at the limit like every other model call.
+            raise writer.WriterError("Today's model budget is used up, so Wonder cannot write a Whenever now.")
         with self.lock:
             old = self.entries.get(edit)
             if edit and not old:
@@ -2365,6 +2368,8 @@ class App:
         return pointed
 
     def start_voice(self):
+        if self.stopped():
+            raise ValueError("Today's model budget is used up, so voice is off until it starts again.")
         session = self.open_voice(self.client.key)
         with self.lock:
             self.voices[session.id] = session
@@ -4744,7 +4749,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.path.startswith("/api/check/") and self.path.endswith("/outline"):
                 return self._json(200, {"outline": self.app.check_outline(self.path.split("/")[3])})
             if self.path == "/api/voice":
-                return self._json(200, {"id": self.app.start_voice()})
+                try:
+                    return self._json(200, {"id": self.app.start_voice()})
+                except ValueError as e:
+                    return self._json(402, {"error": str(e)})
             if self.path.startswith("/api/voice/") and self.path.endswith("/audio"):
                 chunk = self._read(MAX_AUDIO_BYTES)
                 if chunk is None:

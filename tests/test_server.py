@@ -1410,6 +1410,14 @@ class Pointing(TempLogs):
         self.assertTrue(app.point(solid_jpeg(100, 100), 1, 1, 100, 100)["stopped"])
         self.assertEqual(client.marked, [])
 
+    def test_wonder_and_voice_stop_at_the_spend_limit(self):
+        app = self.app(FakeClient())
+        app.writer_usd = server.SPEND_LIMIT_USD
+        with self.assertRaises(server.writer.WriterError):
+            app.start_job("tell me when a person comes", [], [])
+        with self.assertRaises(ValueError):
+            app.start_voice()
+
     def wall(self, client):
         """Two cameras side by side, as camera.py sends them."""
         app = self.app(client)
