@@ -1,0 +1,1540 @@
+{
+ "t0": 1793832076.6547563,
+ "journal": [
+  {
+   "t": 1793831034.8618553,
+   "rule": "Gate Open Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Gate Open Alert is back after a restart.",
+   "values": {}
+  },
+  {
+   "t": 1793832075.2144132,
+   "rule": "Gate Open Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Gate Open Alert is running again.",
+   "values": {}
+  },
+  {
+   "t": 1793832089.6562598,
+   "rule": "Gate Open Alert",
+   "kind": "event",
+   "name": "gate_open",
+   "seconds": null,
+   "text": "Right gate panel swung inward with open passage visible between pillars.",
+   "values": {
+    "check": "c78-20261104-222354-f8e4",
+    "picture": "/rule-file/43b4ab97/frames/0000058.jpg",
+    "occurrence": "c78-20261104-222354-f8e4",
+    "tile": 0,
+    "wall": [
+     2,
+     1
+    ],
+    "camera": "Gate"
+   }
+  },
+  {
+   "t": 1793832095.2341871,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_opened",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "at": 1793832089.6562598,
+    "occurrence": "c78-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832095.7605374,
+   "rule": "Gate Open Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "Someone opened the gate",
+   "values": {
+    "picture": "/rule-file/43b4ab97/pictures/alert-1793832095-12c443.jpg",
+    "clip": "/rule-file/43b4ab97/clips/1793832089-4f3e57.mp4",
+    "cameras": [
+     "Gate"
+    ],
+    "occurrence": "c78-20261104-222354-f8e4",
+    "mode": "here",
+    "clip_start": 1793832085.66
+   }
+  },
+  {
+   "t": 1793832104.9403555,
+   "rule": "Hand Raised Alert",
+   "kind": "event",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "Man on right raises right hand with hand visible at eye/forehead level",
+   "values": {
+    "check": "c123-20261104-222354-f8e4",
+    "picture": "/rule-file/60934de5/frames/0000106.jpg",
+    "occurrence": "c123-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832106.3893328,
+   "rule": "Gate Open Alert",
+   "kind": "end",
+   "name": "gate_open",
+   "seconds": 16.733072996139526,
+   "text": "",
+   "values": {
+    "occurrence": "c78-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832109.9705093,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832104.9403555,
+    "caller_key": "Room:0.24,0.33,0.77,0.99",
+    "occurrence": "c123-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832109.9833918,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Waiter alerted for caller Room:0.24,0.33,0.77,0.99; waiting 1 minute for someone to come to them.",
+   "values": {
+    "check": "c123-20261104-222354-f8e4",
+    "occurrence": "c123-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832109.9936109,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832104.9403555,
+    "caller_key": "Room:0.23,0.33,0.77,0.99",
+    "occurrence": "c123-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832110.002573,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Waiter alerted for caller Room:0.23,0.33,0.77,0.99; waiting 1 minute for someone to come to them.",
+   "values": {
+    "check": "c123-20261104-222354-f8e4",
+    "occurrence": "c123-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832110.2073543,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_closed",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "duration_s": 16.733072996139526,
+    "occurrence": "c78-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832110.2178006,
+   "rule": "Gate Open Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Gate closed after 16 seconds",
+   "values": {
+    "check": "c78-20261104-222354-f8e4",
+    "occurrence": "c78-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832111.128584,
+   "rule": "Hand Raised Alert",
+   "kind": "end",
+   "name": "hand_raised",
+   "seconds": 6.188228368759155,
+   "text": "",
+   "values": {
+    "occurrence": "c123-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832113.393443,
+   "rule": "Hand Raised Alert",
+   "kind": "event",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "Man raises right arm with hand at eye level.",
+   "values": {
+    "check": "c145-20261104-222354-f8e4",
+    "picture": "/rule-file/60934de5/frames/0000133.jpg",
+    "occurrence": "c145-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832114.2767239,
+   "rule": "Hand Raised Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "Someone raised a hand to call for attention",
+   "values": {
+    "picture": "/rule-file/60934de5/pictures/alert-1793832113-3eb2f5.jpg",
+    "clip": "/rule-file/60934de5/clips/1793832104-fc19ef.mp4",
+    "occurrence": "c123-20261104-222354-f8e4",
+    "mode": "here",
+    "people": [
+     {
+      "person_id": "vec82ab19d",
+      "name": "Visitor 1",
+      "role": "",
+      "sure": 0.99,
+      "by": "face",
+      "evidence": [
+       {
+        "kind": "face",
+        "text": "1 clear look, 04:11, 234 px",
+        "score": 0.761
+       },
+       {
+        "kind": "tracker",
+        "text": "followed for 1 min"
+       }
+      ],
+      "tag_face": "/people-file/vec82ab19d/face-1793832090236.jpg",
+      "now_face": "/live-file/faces/17.jpg",
+      "sighting": "c8f2d065",
+      "tagged": null,
+      "visitor": true,
+      "first_seen": 1793832087.399442,
+      "tag_body": false,
+      "confirmed": null
+     }
+    ],
+    "story": [
+     {
+      "t": 1793832062.08,
+      "text": "Visitor 1 arrived",
+      "picture": "/live-file/faces/17.jpg"
+     }
+    ],
+    "clip_start": 1793832100.94
+   }
+  },
+  {
+   "t": 1793832116.7852292,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832113.393443,
+    "caller_key": "Room:0.24,0.32,0.77,0.99",
+    "occurrence": "c145-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832116.7998612,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Waiter alerted for caller Room:0.24,0.32,0.77,0.99; waiting 1 minute for someone to come to them.",
+   "values": {
+    "check": "c145-20261104-222354-f8e4",
+    "occurrence": "c145-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832121.4480617,
+   "rule": "Hand Raised Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "Someone raised a hand to call for attention",
+   "values": {
+    "picture": "/rule-file/60934de5/pictures/alert-1793832120-4cfc4c.jpg",
+    "clip": "/rule-file/60934de5/clips/1793832113-d429ab.mp4",
+    "occurrence": "c145-20261104-222354-f8e4",
+    "mode": "here",
+    "people": [
+     {
+      "person_id": "vec82ab19d",
+      "name": "Visitor 1",
+      "role": "",
+      "sure": 0.99,
+      "by": "face",
+      "evidence": [
+       {
+        "kind": "face",
+        "text": "1 clear look, 04:11, 234 px",
+        "score": 0.761
+       },
+       {
+        "kind": "tracker",
+        "text": "followed for 1 min"
+       }
+      ],
+      "tag_face": "/people-file/vec82ab19d/face-1793832090236.jpg",
+      "now_face": "/live-file/faces/17.jpg",
+      "sighting": "c8f2d065",
+      "tagged": null,
+      "visitor": true,
+      "first_seen": 1793832087.399442,
+      "tag_body": false,
+      "confirmed": null
+     }
+    ],
+    "story": [
+     {
+      "t": 1793832062.08,
+      "text": "Visitor 1 arrived",
+      "picture": "/live-file/faces/17.jpg"
+     },
+     {
+      "t": 1793832113.12,
+      "text": "Hand up",
+      "picture": "/live-file/events/1793832113122-hand_up.jpg"
+     },
+     {
+      "t": 1793832113.39,
+      "text": "Waiter told",
+      "picture": null
+     }
+    ],
+    "clip_start": 1793832111.13
+   }
+  },
+  {
+   "t": 1793832126.9313161,
+   "rule": "Hand Raised Alert",
+   "kind": "end",
+   "name": "hand_raised",
+   "seconds": 13.537873029708862,
+   "text": "",
+   "values": {
+    "occurrence": "c145-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832133.397047,
+   "rule": "Gate Open Alert",
+   "kind": "event",
+   "name": "gate_open",
+   "seconds": null,
+   "text": "Right gate panel swung inward with clear opening to street visible.",
+   "values": {
+    "check": "c221-20261104-222354-f8e4",
+    "picture": "/rule-file/43b4ab97/frames/0000202.jpg",
+    "occurrence": "c221-20261104-222354-f8e4",
+    "tile": 0,
+    "wall": [
+     2,
+     1
+    ],
+    "camera": "Gate"
+   }
+  },
+  {
+   "t": 1793832138.7663565,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_opened",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "at": 1793832133.397047,
+    "occurrence": "c221-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832139.5832705,
+   "rule": "Gate Open Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "Someone opened the gate",
+   "values": {
+    "picture": "/rule-file/43b4ab97/pictures/alert-1793832138-69415d.jpg",
+    "clip": "/rule-file/43b4ab97/clips/1793832133-e1eb77.mp4",
+    "cameras": [
+     "Gate"
+    ],
+    "occurrence": "c221-20261104-222354-f8e4",
+    "mode": "here",
+    "clip_start": 1793832129.66
+   }
+  },
+  {
+   "t": 1793832150.6630898,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "attended",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832104.9403555,
+    "waited_s": 45.255059242248535,
+    "caller_key": "Room:0.24,0.33,0.77,0.99"
+   }
+  },
+  {
+   "t": 1793832150.6740746,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Someone came to caller Room:0.24,0.33,0.77,0.99; no Manager alert for them.",
+   "values": {}
+  },
+  {
+   "t": 1793832150.6831715,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "attended",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832104.9403555,
+    "waited_s": 45.255059242248535,
+    "caller_key": "Room:0.23,0.33,0.77,0.99"
+   }
+  },
+  {
+   "t": 1793832150.6927783,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Someone came to caller Room:0.23,0.33,0.77,0.99; no Manager alert for them.",
+   "values": {}
+  },
+  {
+   "t": 1793832152.6556296,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "attended",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832113.393443,
+    "waited_s": 38.80248975753784,
+    "caller_key": "Room:0.24,0.32,0.77,0.99"
+   }
+  },
+  {
+   "t": 1793832152.666272,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Someone came to caller Room:0.24,0.32,0.77,0.99; no Manager alert for them.",
+   "values": {}
+  },
+  {
+   "t": 1793832155.6567454,
+   "rule": "Hand Raised Alert",
+   "kind": "event",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "Man in red and blue shirt raises right arm with hand visible at head height.",
+   "values": {
+    "check": "c296-20261104-222354-f8e4",
+    "picture": "/rule-file/60934de5/frames/0000270.jpg",
+    "occurrence": "c296-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832164.218174,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832155.6567454,
+    "caller_key": "Room:0.26,0.37,0.63,0.99",
+    "occurrence": "c296-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832164.227695,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Waiter alerted for caller Room:0.26,0.37,0.63,0.99; waiting 1 minute for someone to come to them.",
+   "values": {
+    "check": "c296-20261104-222354-f8e4",
+    "occurrence": "c296-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832164.2398036,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832155.6567454,
+    "caller_key": "Room:0.25,0.37,0.63,0.99",
+    "occurrence": "c296-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832164.2494187,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Waiter alerted for caller Room:0.25,0.37,0.63,0.99; waiting 1 minute for someone to come to them.",
+   "values": {
+    "check": "c296-20261104-222354-f8e4",
+    "occurrence": "c296-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832164.2650218,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832155.6567454,
+    "caller_key": "Room:0.17,0.37,0.63,0.99",
+    "occurrence": "c296-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832164.2746232,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Waiter alerted for caller Room:0.17,0.37,0.63,0.99; waiting 1 minute for someone to come to them.",
+   "values": {
+    "check": "c296-20261104-222354-f8e4",
+    "occurrence": "c296-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832166.2438097,
+   "rule": "Hand Raised Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "Someone raised a hand to call for attention",
+   "values": {
+    "picture": "/rule-file/60934de5/pictures/alert-1793832165-51eda4.jpg",
+    "clip": "/rule-file/60934de5/clips/1793832155-2ccf23.mp4",
+    "occurrence": "c296-20261104-222354-f8e4",
+    "mode": "here",
+    "story": [
+     {
+      "t": 1793832153.39,
+      "text": "Hand up",
+      "picture": "/live-file/events/1793832153393-hand_up.jpg"
+     },
+     {
+      "t": 1793832155.66,
+      "text": "Waiter told",
+      "picture": null
+     }
+    ],
+    "clip_start": 1793832151.93
+   }
+  },
+  {
+   "t": 1793832168.4230645,
+   "rule": "Gate Open Alert",
+   "kind": "end",
+   "name": "gate_open",
+   "seconds": 35.02601742744446,
+   "text": "",
+   "values": {
+    "occurrence": "c221-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832169.656458,
+   "rule": "Hand Raised Alert",
+   "kind": "end",
+   "name": "hand_raised",
+   "seconds": 13.999712467193604,
+   "text": "",
+   "values": {
+    "occurrence": "c296-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832171.486195,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_closed",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "duration_s": 35.02601742744446,
+    "occurrence": "c221-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832171.4969146,
+   "rule": "Gate Open Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Gate closed after 35 seconds",
+   "values": {
+    "check": "c221-20261104-222354-f8e4",
+    "occurrence": "c221-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832180.9271479,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "attended",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832155.6567454,
+    "waited_s": 24.549906969070435,
+    "caller_key": "Room:0.26,0.37,0.63,0.99"
+   }
+  },
+  {
+   "t": 1793832180.9376833,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Someone came to caller Room:0.26,0.37,0.63,0.99; no Manager alert for them.",
+   "values": {}
+  },
+  {
+   "t": 1793832180.948288,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "attended",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832155.6567454,
+    "waited_s": 24.549906969070435,
+    "caller_key": "Room:0.25,0.37,0.63,0.99"
+   }
+  },
+  {
+   "t": 1793832180.9573038,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Someone came to caller Room:0.25,0.37,0.63,0.99; no Manager alert for them.",
+   "values": {}
+  },
+  {
+   "t": 1793832185.3910987,
+   "rule": "Gate Open Alert",
+   "kind": "event",
+   "name": "gate_open",
+   "seconds": null,
+   "text": "Right gate leaf swung inward open with clear passage gap beside closed left leaf.",
+   "values": {
+    "check": "c407-20261104-222354-f8e4",
+    "picture": "/rule-file/43b4ab97/frames/0000376.jpg",
+    "occurrence": "c407-20261104-222354-f8e4",
+    "tile": 0,
+    "wall": [
+     2,
+     1
+    ],
+    "camera": "Gate"
+   }
+  },
+  {
+   "t": 1793832193.8651786,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_opened",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "at": 1793832185.3910987,
+    "occurrence": "c407-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832194.936834,
+   "rule": "Gate Open Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "Someone opened the gate",
+   "values": {
+    "picture": "/rule-file/43b4ab97/pictures/alert-1793832193-40746d.jpg",
+    "clip": "/rule-file/43b4ab97/clips/1793832185-71623f.mp4",
+    "cameras": [
+     "Gate"
+    ],
+    "occurrence": "c407-20261104-222354-f8e4",
+    "mode": "here",
+    "story": [
+     {
+      "t": 1793832155.66,
+      "text": "Waiter told",
+      "picture": null
+     },
+     {
+      "t": 1793832159.12,
+      "text": "Hand up",
+      "picture": "/live-file/events/1793832159122-hand_up.jpg"
+     }
+    ],
+    "clip_start": 1793832181.66
+   }
+  },
+  {
+   "t": 1793832197.3924725,
+   "rule": "Gate Open Alert",
+   "kind": "end",
+   "name": "gate_open",
+   "seconds": 12.001373767852783,
+   "text": "",
+   "values": {
+    "occurrence": "c407-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832200.7674918,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_closed",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "duration_s": 12.001373767852783,
+    "occurrence": "c407-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832200.7816644,
+   "rule": "Gate Open Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Gate closed after 12 seconds",
+   "values": {
+    "check": "c407-20261104-222354-f8e4",
+    "occurrence": "c407-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832200.9796185,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "attended",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832155.6567454,
+    "waited_s": 44.55736708641052,
+    "caller_key": "Room:0.17,0.37,0.63,0.99"
+   }
+  },
+  {
+   "t": 1793832200.992323,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Someone came to caller Room:0.17,0.37,0.63,0.99; no Manager alert for them.",
+   "values": {}
+  },
+  {
+   "t": 1793832205.1286662,
+   "rule": "Hand Raised Alert",
+   "kind": "event",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "Person in white shirt raises right hand above head at left table.",
+   "values": {
+    "check": "c468-20261104-222354-f8e4",
+    "picture": "/rule-file/60934de5/frames/0000452.jpg",
+    "occurrence": "c468-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832211.4856713,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832205.1286662,
+    "caller_key": "unknown:1793832205.1286662",
+    "occurrence": "c468-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832211.5057242,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Waiting 1 minute; caller position not identified, so only a confirmed visit could be detected from a position.",
+   "values": {
+    "check": "c468-20261104-222354-f8e4",
+    "occurrence": "c468-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832212.5174074,
+   "rule": "Hand Raised Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "Someone raised a hand to call for attention",
+   "values": {
+    "picture": "/rule-file/60934de5/pictures/alert-1793832211-c982d2.jpg",
+    "clip": "/rule-file/60934de5/clips/1793832205-b5667a.mp4",
+    "occurrence": "c468-20261104-222354-f8e4",
+    "mode": "here",
+    "story": [
+     {
+      "t": 1793832160.39,
+      "text": "Hand up",
+      "picture": "/live-file/events/1793832160390-hand_up.jpg"
+     },
+     {
+      "t": 1793832205.13,
+      "text": "Waiter told",
+      "picture": null
+     }
+    ],
+    "clip_start": 1793832201.13
+   }
+  },
+  {
+   "t": 1793832216.6765704,
+   "rule": "Gate Open Alert",
+   "kind": "event",
+   "name": "gate_open",
+   "seconds": null,
+   "text": "Right side gate panel swung inward open with clear passage gap beside main gate",
+   "values": {
+    "check": "c506-20261104-222354-f8e4",
+    "picture": "/rule-file/43b4ab97/frames/0000485.jpg",
+    "occurrence": "c506-20261104-222354-f8e4",
+    "tile": 0,
+    "wall": [
+     2,
+     1
+    ],
+    "camera": "Gate"
+   }
+  },
+  {
+   "t": 1793832222.026536,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_opened",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "at": 1793832216.6765704,
+    "occurrence": "c506-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832222.9306755,
+   "rule": "Gate Open Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "Someone opened the gate",
+   "values": {
+    "picture": "/rule-file/43b4ab97/pictures/alert-1793832222-f85cef.jpg",
+    "clip": "/rule-file/43b4ab97/clips/1793832216-05ff46.mp4",
+    "cameras": [
+     "Gate"
+    ],
+    "occurrence": "c506-20261104-222354-f8e4",
+    "mode": "here",
+    "story": [
+     {
+      "t": 1793832159.12,
+      "text": "Hand up",
+      "picture": "/live-file/events/1793832159122-hand_up.jpg"
+     },
+     {
+      "t": 1793832205.13,
+      "text": "Waiter told",
+      "picture": null
+     }
+    ],
+    "clip_start": 1793832213.12
+   }
+  },
+  {
+   "t": 1793832227.4175792,
+   "rule": "Hand Raised Alert",
+   "kind": "end",
+   "name": "hand_raised",
+   "seconds": 22.288913011550903,
+   "text": "",
+   "values": {
+    "occurrence": "c468-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832239.1420372,
+   "rule": "Hand Raised Alert",
+   "kind": "event",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "Person at gate with both hands raised near head height.",
+   "values": {
+    "check": "c589-20261104-222354-f8e4",
+    "picture": "/rule-file/60934de5/frames/0000563.jpg",
+    "occurrence": "c589-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832245.0530386,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "hand_raised",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832239.1420372,
+    "caller_key": "unknown:1793832239.1420372",
+    "occurrence": "c589-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832245.0664258,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Waiting 1 minute; caller position not identified, so only a confirmed visit could be detected from a position.",
+   "values": {
+    "check": "c589-20261104-222354-f8e4",
+    "occurrence": "c589-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832245.778354,
+   "rule": "Hand Raised Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "Someone raised a hand to call for attention",
+   "values": {
+    "picture": "/rule-file/60934de5/pictures/alert-1793832245-79e02e.jpg",
+    "clip": "/rule-file/60934de5/clips/1793832239-2c83c0.mp4",
+    "occurrence": "c589-20261104-222354-f8e4",
+    "mode": "here",
+    "story": [
+     {
+      "t": 1793832160.39,
+      "text": "Hand up",
+      "picture": "/live-file/events/1793832160390-hand_up.jpg"
+     },
+     {
+      "t": 1793832239.14,
+      "text": "Waiter told",
+      "picture": null
+     }
+    ],
+    "clip_start": 1793832235.42
+   }
+  },
+  {
+   "t": 1793832254.4125316,
+   "rule": "Hand Raised Alert",
+   "kind": "end",
+   "name": "hand_raised",
+   "seconds": 15.27049446105957,
+   "text": "",
+   "values": {
+    "occurrence": "c589-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832254.4125316,
+   "rule": "Gate Open Alert",
+   "kind": "end",
+   "name": "gate_open",
+   "seconds": 37.73596119880676,
+   "text": "",
+   "values": {
+    "occurrence": "c506-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832257.3331554,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_closed",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "duration_s": 37.73596119880676,
+    "occurrence": "c506-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832257.343773,
+   "rule": "Gate Open Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Gate closed after 37 seconds",
+   "values": {
+    "check": "c506-20261104-222354-f8e4",
+    "occurrence": "c506-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832265.536212,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "unattended",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832205.1286662,
+    "waited_s": 60.0,
+    "caller_key": "unknown:1793832205.1286662"
+   }
+  },
+  {
+   "t": 1793832265.5496433,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "No one came to caller unknown:1793832205.1286662 within 1 minute; Manager alerted.",
+   "values": {}
+  },
+  {
+   "t": 1793832266.1906643,
+   "rule": "Hand Raised Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "No one came within 1 minute to the person who raised a hand",
+   "values": {
+    "picture": "/rule-file/60934de5/pictures/alert-1793832265-cccc22.jpg",
+    "clip": "/rule-file/60934de5/clips/1793832205-129ca5.mp4",
+    "occurrence": "c468-20261104-222354-f8e4",
+    "mode": "here",
+    "story": [
+     {
+      "t": 1793832160.39,
+      "text": "Hand up",
+      "picture": "/live-file/events/1793832160390-hand_up.jpg"
+     },
+     {
+      "t": 1793832205.13,
+      "text": "Waiter told",
+      "picture": null
+     },
+     {
+      "t": 1793832205.13,
+      "text": "Manager told",
+      "picture": null
+     }
+    ],
+    "clip_start": 1793832201.13
+   }
+  },
+  {
+   "t": 1793832277.6822994,
+   "rule": "Gate Open Alert",
+   "kind": "event",
+   "name": "gate_open",
+   "seconds": null,
+   "text": "Right gate leaf swung inward open with passage visible beside main gate.",
+   "values": {
+    "check": "c656-20261104-222354-f8e4",
+    "picture": "/rule-file/43b4ab97/frames/0000635.jpg",
+    "occurrence": "c656-20261104-222354-f8e4",
+    "tile": 0,
+    "wall": [
+     2,
+     1
+    ],
+    "camera": "Gate"
+   }
+  },
+  {
+   "t": 1793832281.138822,
+   "rule": "Gate Open Alert",
+   "kind": "end",
+   "name": "gate_open",
+   "seconds": 3.4565227031707764,
+   "text": "",
+   "values": {
+    "occurrence": "c656-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832281.138822,
+   "rule": "Gate Open Alert",
+   "kind": "event",
+   "name": "gate_open",
+   "seconds": null,
+   "text": "Person in dark clothes",
+   "values": {
+    "check": "c731-20261104-222354-f8e4",
+    "picture": "/rule-file/43b4ab97/frames/0000648.jpg",
+    "occurrence": "c731-20261104-222354-f8e4",
+    "tile": 0,
+    "wall": [
+     2,
+     1
+    ],
+    "camera": "Gate",
+    "why": "Frame 4-6 show left panel starting to swing and right panel swung inward away from closed position; Frames 7-10 show both gate panels swung away from fence line with wide clear opening between pillars; Bright light / vehicle headlights visible through the open gap in frames 7-10"
+   }
+  },
+  {
+   "t": 1793832283.426518,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_opened",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "at": 1793832277.6822994,
+    "occurrence": "c656-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832284.3135862,
+   "rule": "Gate Open Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "Someone opened the gate",
+   "values": {
+    "picture": "/rule-file/43b4ab97/pictures/alert-1793832283-a8c832.jpg",
+    "clip": "/rule-file/43b4ab97/clips/1793832277-50e612.mp4",
+    "cameras": [
+     "Gate"
+    ],
+    "occurrence": "c656-20261104-222354-f8e4",
+    "mode": "here",
+    "story": [
+     {
+      "t": 1793832159.12,
+      "text": "Hand up",
+      "picture": "/live-file/events/1793832159122-hand_up.jpg"
+     },
+     {
+      "t": 1793832205.13,
+      "text": "Manager told",
+      "picture": null
+     },
+     {
+      "t": 1793832239.14,
+      "text": "Waiter told",
+      "picture": null
+     }
+    ],
+    "clip_start": 1793832274.14
+   }
+  },
+  {
+   "t": 1793832299.6216037,
+   "rule": "Hand Raised Alert",
+   "kind": "record",
+   "name": "unattended",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "event_t": 1793832239.1420372,
+    "waited_s": 60.0,
+    "caller_key": "unknown:1793832239.1420372"
+   }
+  },
+  {
+   "t": 1793832299.6344893,
+   "rule": "Hand Raised Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "No one came to caller unknown:1793832239.1420372 within 1 minute; Manager alerted.",
+   "values": {}
+  },
+  {
+   "t": 1793832300.3222933,
+   "rule": "Hand Raised Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "No one came within 1 minute to the person who raised a hand",
+   "values": {
+    "picture": "/rule-file/60934de5/pictures/alert-1793832299-eccf15.jpg",
+    "clip": "/rule-file/60934de5/clips/1793832239-4e8183.mp4",
+    "occurrence": "c589-20261104-222354-f8e4",
+    "mode": "here",
+    "story": [
+     {
+      "t": 1793832160.39,
+      "text": "Hand up",
+      "picture": "/live-file/events/1793832160390-hand_up.jpg"
+     },
+     {
+      "t": 1793832239.14,
+      "text": "Waiter told",
+      "picture": null
+     },
+     {
+      "t": 1793832239.14,
+      "text": "Manager told",
+      "picture": null
+     }
+    ],
+    "clip_start": 1793832235.42
+   }
+  },
+  {
+   "t": 1793832303.8097818,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_closed",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "duration_s": 3.4565227031707764,
+    "occurrence": "c656-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832303.835277,
+   "rule": "Gate Open Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Gate closed after 3 seconds",
+   "values": {
+    "check": "c656-20261104-222354-f8e4",
+    "occurrence": "c656-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832303.8484564,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_opened",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "at": 1793832281.138822,
+    "occurrence": "c731-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832304.68569,
+   "rule": "Gate Open Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "Someone opened the gate",
+   "values": {
+    "picture": "/rule-file/43b4ab97/pictures/alert-1793832303-d30452.jpg",
+    "clip": "/rule-file/43b4ab97/clips/1793832281-9736b2.mp4",
+    "cameras": [
+     "Gate"
+    ],
+    "occurrence": "c731-20261104-222354-f8e4",
+    "mode": "here",
+    "story": [
+     {
+      "t": 1793832239.14,
+      "text": "Waiter told",
+      "picture": null
+     },
+     {
+      "t": 1793832239.14,
+      "text": "Manager told",
+      "picture": null
+     }
+    ],
+    "clip_start": 1793832277.68
+   }
+  },
+  {
+   "t": 1793832317.6730247,
+   "rule": "Gate Open Alert",
+   "kind": "end",
+   "name": "gate_open",
+   "seconds": 36.534202575683594,
+   "text": "",
+   "values": {
+    "occurrence": "c731-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832321.8360941,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_closed",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "duration_s": 36.534202575683594,
+    "occurrence": "c731-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832321.850827,
+   "rule": "Gate Open Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Gate closed after 36 seconds",
+   "values": {
+    "check": "c731-20261104-222354-f8e4",
+    "occurrence": "c731-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832544.1407304,
+   "rule": "Gate Open Alert",
+   "kind": "event",
+   "name": "gate_open",
+   "seconds": null,
+   "text": "Right gate panel swung inward with open passage beside it",
+   "values": {
+    "check": "c1125-20261104-222354-f8e4",
+    "picture": "/rule-file/43b4ab97/frames/0001110.jpg",
+    "occurrence": "c1125-20261104-222354-f8e4",
+    "tile": 0,
+    "wall": [
+     2,
+     1
+    ],
+    "camera": "Gate"
+   }
+  },
+  {
+   "t": 1793832547.6446528,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_opened",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "at": 1793832544.1407304,
+    "occurrence": "c1125-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832548.3819005,
+   "rule": "Gate Open Alert",
+   "kind": "notify",
+   "name": "",
+   "seconds": null,
+   "text": "Someone opened the gate",
+   "values": {
+    "picture": "/rule-file/43b4ab97/pictures/alert-1793832547-df7855.jpg",
+    "clip": "/rule-file/43b4ab97/clips/1793832544-04b237.mp4",
+    "cameras": [
+     "Gate"
+    ],
+    "occurrence": "c1125-20261104-222354-f8e4",
+    "mode": "here",
+    "clip_start": 1793832542.67
+   }
+  },
+  {
+   "t": 1793832554.4094296,
+   "rule": "Gate Open Alert",
+   "kind": "end",
+   "name": "gate_open",
+   "seconds": 10.268699169158936,
+   "text": "",
+   "values": {
+    "occurrence": "c1125-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832558.5250833,
+   "rule": "Gate Open Alert",
+   "kind": "record",
+   "name": "gate_closed",
+   "seconds": null,
+   "text": "",
+   "values": {
+    "duration_s": 10.268699169158936,
+    "occurrence": "c1125-20261104-222354-f8e4"
+   }
+  },
+  {
+   "t": 1793832558.5349047,
+   "rule": "Gate Open Alert",
+   "kind": "log",
+   "name": "",
+   "seconds": null,
+   "text": "Gate closed after 10 seconds",
+   "values": {
+    "check": "c1125-20261104-222354-f8e4",
+    "occurrence": "c1125-20261104-222354-f8e4"
+   }
+  }
+ ],
+ "timeline": {
+  "gate": {
+   "G01": [
+    0,
+    40.0
+   ],
+   "G02": [
+    46.0,
+    40.0
+   ],
+   "G03": [
+    92.0,
+    40.0
+   ],
+   "G04": [
+    138.0,
+    40.0
+   ],
+   "G05": [
+    184.0,
+    50.0
+   ],
+   "G06": [
+    240.0,
+    40.0
+   ],
+   "G07": [
+    286.0,
+    40.0
+   ],
+   "G08": [
+    332.0,
+    40.0
+   ],
+   "G09": [
+    378.0,
+    30.0
+   ],
+   "G10": [
+    414.0,
+    35.0
+   ],
+   "G11": [
+    455.0,
+    40.0
+   ]
+  },
+  "hand": {
+   "H3": [
+    0,
+    19.933333
+   ],
+   "H4": [
+    25.93,
+    18.466667
+   ],
+   "H5": [
+    50.4,
+    15.133333
+   ],
+   "H6": [
+    71.53,
+    15.2
+   ],
+   "H7": [
+    92.73,
+    43.466667
+   ]
+  }
+ },
+ "cost_usd": 1.3308,
+ "writing_usd": 0.6241,
+ "motion": {
+  "G01": [
+   3.0
+  ],
+  "G02": [
+   7.5
+  ],
+  "G03": [
+   6.5
+  ],
+  "G04": [
+   0.5
+  ],
+  "G05": [
+   11.5,
+   42.0
+  ],
+  "G06": [
+   1.5
+  ],
+  "G07": [
+   13.0
+  ],
+  "G08": [
+   6.0
+  ],
+  "G09": [
+   10.5
+  ],
+  "G10": [
+   12.0
+  ],
+  "G11": [
+   11.0
+  ],
+  "H3": [
+   0.5
+  ],
+  "H4": [
+   0.6
+  ],
+  "H5": [
+   0.6
+  ],
+  "H6": [
+   0.5
+  ],
+  "H7": [
+   0.3,
+   30.3
+  ]
+ }
+}

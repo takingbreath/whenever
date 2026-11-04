@@ -28,7 +28,7 @@ Akhilesh Khajuria ([takingbreath](https://github.com/takingbreath)) built Whenev
 
 - [docs/architecture.md](docs/architecture.md): one real rule from the sentence to the alert, with the model or local part at each stage and links to the code.
 - [examples/](examples): three rules that Wonder wrote, with Wonder's own tests and independent tests. `python3 examples/run_examples.py` runs them with no API call.
-- [eval/README.md](eval/README.md): the evaluation against a motion baseline.
+- [eval/README.md](eval/README.md): 16 clips labelled before the run, two rules, and a motion baseline on the same clips. Gate: 6 of 6 openings alerted, no alert on 5 clips with only lights or passers-by, 1 duplicate alert, median delay 8.3 s. Hand: 1 of 2 raised hands alerted, 4 false alerts. The motion trigger alerted on all 8 clips where nothing should alert.
 - [eval/cost-results.md](eval/cost-results.md): what writing and running rules costs, marked as measured or estimated.
 - [docs/deployment-evidence.md](docs/deployment-evidence.md): the builder's own installation on five real cameras, the problems it showed, and what we changed.
 

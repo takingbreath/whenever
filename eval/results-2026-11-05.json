@@ -1,0 +1,262 @@
+{
+ "cases": [
+  {
+   "case": "G01",
+   "rule": "gate",
+   "expected": "alert",
+   "alerts": 1,
+   "correct": true,
+   "missed": false,
+   "false": 0,
+   "delay_s": 8.1,
+   "motion_alerts": 1,
+   "motion_before_event": 1
+  },
+  {
+   "case": "G02",
+   "rule": "gate",
+   "expected": "alert",
+   "alerts": 1,
+   "correct": true,
+   "missed": false,
+   "false": 0,
+   "delay_s": 6.9,
+   "motion_alerts": 1,
+   "motion_before_event": 1
+  },
+  {
+   "case": "G03",
+   "rule": "gate",
+   "expected": "alert",
+   "alerts": 1,
+   "correct": true,
+   "missed": false,
+   "false": 0,
+   "delay_s": 14.3,
+   "motion_alerts": 1,
+   "motion_before_event": 1
+  },
+  {
+   "case": "G04",
+   "rule": "gate",
+   "expected": "alert",
+   "alerts": 1,
+   "correct": true,
+   "missed": false,
+   "false": 0,
+   "delay_s": 8.3,
+   "motion_alerts": 1,
+   "motion_before_event": 0
+  },
+  {
+   "case": "G05",
+   "rule": "gate",
+   "expected": "alert",
+   "alerts": 2,
+   "correct": true,
+   "missed": false,
+   "false": 1,
+   "delay_s": 8.7,
+   "motion_alerts": 2,
+   "motion_before_event": 1
+  },
+  {
+   "case": "G06",
+   "rule": "gate",
+   "expected": "no alert",
+   "alerts": 0,
+   "correct": true,
+   "missed": false,
+   "false": 0,
+   "delay_s": null,
+   "motion_alerts": 1,
+   "motion_before_event": 0
+  },
+  {
+   "case": "G07",
+   "rule": "gate",
+   "expected": "no alert",
+   "alerts": 0,
+   "correct": true,
+   "missed": false,
+   "false": 0,
+   "delay_s": null,
+   "motion_alerts": 1,
+   "motion_before_event": 0
+  },
+  {
+   "case": "G08",
+   "rule": "gate",
+   "expected": "no alert",
+   "alerts": 0,
+   "correct": true,
+   "missed": false,
+   "false": 0,
+   "delay_s": null,
+   "motion_alerts": 1,
+   "motion_before_event": 0
+  },
+  {
+   "case": "G09",
+   "rule": "gate",
+   "expected": "no alert",
+   "alerts": 0,
+   "correct": true,
+   "missed": false,
+   "false": 0,
+   "delay_s": null,
+   "motion_alerts": 1,
+   "motion_before_event": 0
+  },
+  {
+   "case": "G10",
+   "rule": "gate",
+   "expected": "no alert",
+   "alerts": 0,
+   "correct": true,
+   "missed": false,
+   "false": 0,
+   "delay_s": null,
+   "motion_alerts": 1,
+   "motion_before_event": 0
+  },
+  {
+   "case": "G11",
+   "rule": "gate",
+   "expected": "alert",
+   "alerts": 1,
+   "correct": true,
+   "missed": false,
+   "false": 0,
+   "delay_s": 4.7,
+   "motion_alerts": 1,
+   "motion_before_event": 0
+  },
+  {
+   "case": "H3",
+   "rule": "hand",
+   "expected": "no alert",
+   "alerts": 0,
+   "correct": true,
+   "missed": false,
+   "false": 0,
+   "delay_s": null,
+   "motion_alerts": 1,
+   "motion_before_event": 0
+  },
+  {
+   "case": "H4",
+   "rule": "hand",
+   "expected": "no alert",
+   "alerts": 2,
+   "correct": false,
+   "missed": false,
+   "false": 2,
+   "delay_s": null,
+   "motion_alerts": 1,
+   "motion_before_event": 0
+  },
+  {
+   "case": "H5",
+   "rule": "hand",
+   "expected": "alert",
+   "alerts": 0,
+   "correct": false,
+   "missed": true,
+   "false": 0,
+   "delay_s": null,
+   "motion_alerts": 1,
+   "motion_before_event": 1
+  },
+  {
+   "case": "H6",
+   "rule": "hand",
+   "expected": "alert",
+   "alerts": 1,
+   "correct": true,
+   "missed": false,
+   "false": 0,
+   "delay_s": 14.1,
+   "motion_alerts": 1,
+   "motion_before_event": 1
+  },
+  {
+   "case": "H7",
+   "rule": "hand",
+   "expected": "no alert",
+   "alerts": 1,
+   "correct": false,
+   "missed": false,
+   "false": 1,
+   "delay_s": null,
+   "motion_alerts": 2,
+   "motion_before_event": 0
+  },
+  {
+   "case": "outside hand cases",
+   "rule": "hand",
+   "expected": "no alert",
+   "alerts": 1,
+   "correct": false,
+   "missed": false,
+   "false": 1,
+   "delay_s": null,
+   "motion_alerts": 0,
+   "motion_before_event": 0,
+   "detail": [
+    {
+     "video_s": 162.5,
+     "text": "Someone raised a hand to call for attention"
+    }
+   ]
+  }
+ ],
+ "summary": [
+  {
+   "rule": "gate",
+   "cases": 11,
+   "should_alert": 6,
+   "should_not": 5,
+   "correct_alerts": 6,
+   "missed": 0,
+   "false_alerts": 1,
+   "correct_silences": 5,
+   "delay_median_s": 8.3,
+   "delay_max_s": 14.3,
+   "motion_alerts": 12,
+   "motion_false_alerts": 9,
+   "motion_cases_alerting_when_nothing_happened": 5
+  },
+  {
+   "rule": "hand",
+   "cases": 5,
+   "should_alert": 2,
+   "should_not": 3,
+   "correct_alerts": 1,
+   "missed": 1,
+   "false_alerts": 4,
+   "correct_silences": 1,
+   "delay_median_s": 14.1,
+   "delay_max_s": 14.1,
+   "motion_alerts": 6,
+   "motion_false_alerts": 6,
+   "motion_cases_alerting_when_nothing_happened": 3
+  },
+  {
+   "rule": "all",
+   "cases": 16,
+   "should_alert": 8,
+   "should_not": 8,
+   "correct_alerts": 7,
+   "missed": 1,
+   "false_alerts": 5,
+   "correct_silences": 6,
+   "delay_median_s": 8.3,
+   "delay_max_s": 14.3,
+   "motion_alerts": 18,
+   "motion_false_alerts": 15,
+   "motion_cases_alerting_when_nothing_happened": 8
+  }
+ ],
+ "cost_usd": 1.3308
+}
