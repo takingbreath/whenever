@@ -12,6 +12,7 @@ import queue
 import sqlite3
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 BUSY_EVERY_S = 1.0
@@ -64,6 +65,8 @@ class Moments:
             self.db.execute("CREATE INDEX IF NOT EXISTS moments_t ON moments (t)")
             self.db.commit()
         self.embedder = embedder
+        # The last pictures that could not be indexed, so a fault is visible and not only skipped.
+        self.errors = deque(maxlen=20)
         self.picture = footage_picture
         self.wall = wall
         self.busy_of = busy_of
@@ -114,7 +117,8 @@ class Moments:
                 if not tiles:
                     continue
                 self._embed(frame, tiles)
-            except Exception:  # one bad picture must not stop the index
+            except Exception as e:  # one bad picture must not stop the index
+                self.errors.append(f"{time.strftime('%H:%M:%S')} {type(e).__name__}: {e}")
                 continue
 
     def _embed(self, frame, tiles):
@@ -157,7 +161,8 @@ class Moments:
                 continue
             try:
                 self._embed(frame, tiles)
-            except Exception:
+            except Exception as e:
+                self.errors.append(f"{time.strftime('%H:%M:%S')} {type(e).__name__}: {e}")
                 continue
             time.sleep(BACKFILL_PAUSE_S)
 

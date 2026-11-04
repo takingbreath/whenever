@@ -26,6 +26,9 @@ BODY_TYPES = ("none", "json", "text")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _-]{0,39}")
 INPUT = re.compile(r"[a-z][a-z0-9_]{0,29}")
 SECRET = re.compile(r"[A-Z][A-Z0-9_]{1,39}")
+# Keys that the alert channels use. They live in the same actions.env, so a custom action cannot name them.
+RESERVED = frozenset({"TELEGRAM_BOT_TOKEN", "WEBPUSH_PRIVATE_KEY", "NTFY_TOPIC", "AWS_SES_ACCESS_KEY_ID",
+                      "AWS_SES_SECRET_ACCESS_KEY", "AWS_SES_REGION", "AWS_SES_PROFILE", "WHENEVER_MAIL_FROM"})
 BLANK = re.compile(r"\{(secret:)?([A-Za-z_][A-Za-z0-9_]*)\}")
 MAX_ACTIONS = 20
 MAX_INPUTS = 8
@@ -152,6 +155,8 @@ def check_draft(draft, taken=()):
     for item in secrets:
         if not SECRET.fullmatch(item["name"]):
             raise ActionError(f"The key name {item['name']!r} must be in capital letters.")
+        if item["name"] in RESERVED:
+            raise ActionError(f"The key name {item['name']} belongs to Whenever's alerts. Use another name.")
     headers = {str(k).strip(): str(v) for k, v in (draft.get("headers") or {}).items() if str(k).strip()}
     body_type = str(draft.get("body_type") or "none")
     body = str(draft.get("body") or "")
@@ -268,6 +273,9 @@ class Connectors:
     def send(self, action, inputs=None, picture=None, click=None):
         """Sends one request. click is a page that a phone alert opens when the person taps it."""
         secrets = read_secrets(self.secrets_path)
+        if action["kind"] != "phone":
+            # An action saved before RESERVED existed still cannot read the alert keys.
+            secrets = {name: value for name, value in secrets.items() if name not in RESERVED}
         missing = self.missing(action, secrets)
         if missing and action["kind"] == "phone":
             raise ActionError("Pair a phone first, under Actions.")

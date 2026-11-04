@@ -35,6 +35,8 @@ KINDS = ("push", "telegram", "email", "ntfy")
 PAIR_S = 15 * 60
 MAX_PUSH = 10
 MAX_EMAILS = 5
+# Pairing emails in one hour, so nobody can make Whenever mail many strangers.
+MAX_PAIR_MAILS_HOUR = 6
 MAX_PICTURES = 300
 MAX_TEXT = 900
 TIMEOUT_S = 10
@@ -240,6 +242,7 @@ class Channels:
         self.pictures_dir = Path(pictures_dir) if pictures_dir else None
         self.clock = clock
         self.lock = threading.Lock()
+        self.pair_mails = []
         self.pairings = {}
         self.bot = None
         self.bot_for = None
@@ -595,6 +598,12 @@ class Channels:
             raise ChannelError("Type a full email address, like you@example.com.")
         if len(self.places["email"]) >= MAX_EMAILS:
             raise ChannelError(f"You can pair {MAX_EMAILS} addresses. Remove one first.")
+        now = self.clock()
+        with self.lock:
+            self.pair_mails = [t for t in self.pair_mails if now - t < 3600]
+            if len(self.pair_mails) >= MAX_PAIR_MAILS_HOUR:
+                raise ChannelError("Whenever sent many pairing emails in the last hour. Try again later.")
+            self.pair_mails.append(now)
         token = self.start("email", address=address)
         url = confirm_url(token)
         lines = ["Someone asked Whenever to send its alerts to this address. If it was you, tap the button.",

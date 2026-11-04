@@ -292,6 +292,12 @@ class Email(Places):
         self.assertEqual(self.channels.all()[0]["label"], "me@example.com")
         self.assertEqual(place["address"], "me@example.com")
 
+    def test_pairing_emails_stop_after_a_few_in_an_hour(self):
+        for _ in range(channels.MAX_PAIR_MAILS_HOUR):
+            self.channels.start_email("me@example.com", str)
+        with self.assertRaisesRegex(ChannelError, "many pairing emails"):
+            self.channels.start_email("you@example.com", str)
+
     def test_a_bad_address_sends_nothing(self):
         with self.assertRaisesRegex(ChannelError, "full email address"):
             self.channels.start_email("me at home", str)

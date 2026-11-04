@@ -1,6 +1,5 @@
 """Ask: plan a question, answer it from the journal, the live picture or the saved footage."""
 
-import json
 import shutil
 import sys
 import tempfile

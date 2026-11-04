@@ -27,6 +27,16 @@ NoNewPrivileges=yes
 ProtectHome=yes
 ProtectSystem=strict
 ReadWritePaths=/srv/whenever/demo
+# The demo runs as the same Unix user as the real server. So it must not see the real server's keys,
+# cameras, rules, data or footage. Only the real server's spend.json stays visible, read-only, for the
+# shared budget (WHENEVER_SPEND_ALSO). Install a changed unit with deploy/demo/setup.sh or by hand.
+TemporaryFileSystem=/srv/whenever/app/data:ro
+BindReadOnlyPaths=-/srv/whenever/app/data/spend.json
+InaccessiblePaths=-/srv/whenever/app/.env -/srv/whenever/app/access.env -/srv/whenever/app/actions.env
+InaccessiblePaths=-/srv/whenever/app/camera.env -/srv/whenever/app/camera.rtsp.env -/srv/whenever/app/ezviz_open.env
+InaccessiblePaths=-/srv/whenever/app/ezviz_token.json -/srv/whenever/app/.ezviz -/srv/whenever/app/rules
+InaccessiblePaths=-/srv/whenever/app/logs -/srv/whenever/app/.media -/srv/whenever/settings.env
+InaccessiblePaths=-/srv/whenever/media/buffer -/srv/whenever/backup
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes

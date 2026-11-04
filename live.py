@@ -26,7 +26,6 @@ The page asks for overlay() about every half second, so it reads only what the t
 
 import itertools
 import json
-import math
 import os
 import re
 import sqlite3
@@ -1200,11 +1199,3 @@ class Analyzer:
             for path in row:
                 if path:
                     (self.folder / path).unlink(missing_ok=True)
-
-
-def as_number(value, default):
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return default
-    return number if math.isfinite(number) else default

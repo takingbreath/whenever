@@ -72,10 +72,6 @@ BRANDS = {
 }
 
 
-def is_brand(address):
-    return urllib.parse.urlsplit(str(address)).scheme.lower() in BRANDS
-
-
 def candidates(address):
     """The stream addresses to try, in order. An address that is not a short brand address stays as it is.
 

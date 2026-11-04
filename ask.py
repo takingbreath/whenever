@@ -249,8 +249,8 @@ class Asks:
             f"saved frames back to {day_clock(oldest, now) if oldest else 'now'}, and the full video of the last "
             f"{app.recording_minutes():.0f} minutes.\n"
             f"Now: {datetime.fromtimestamp(now, ZONE):%A %d %B %Y, %H:%M}.\n"
-            f"Cameras:\n" + "\n".join(cameras) + "\n"
-            f"Rules:\n" + ("\n".join(rules) or "- none") + "\n"
+            "Cameras:\n" + "\n".join(cameras) + "\n"
+            "Rules:\n" + ("\n".join(rules) or "- none") + "\n"
             f"Journal:\n{app.journal.summary() or '- empty'}\n"
             + ("Where the question was asked: " + " ".join(place) + "\n" if place else "")
             + f"Question: {job['question']}\n\n"

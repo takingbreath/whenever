@@ -30,6 +30,7 @@ EACCES = 13
 EXECUTE, WRITE_FILE, READ_FILE, READ_DIR = 1 << 0, 1 << 1, 1 << 2, 1 << 3
 CHANGE = sum(1 << bit for bit in range(4, 13))  # remove and make files, folders, links and devices
 REFER, TRUNCATE, IOCTL_DEV = 1 << 13, 1 << 14, 1 << 15
+MAKE_SYM = 1 << 12
 READ = EXECUTE | READ_FILE | READ_DIR
 TCP_BIND, TCP_CONNECT = 1 << 0, 1 << 1
 SCOPE_ABSTRACT_UNIX, SCOPE_SIGNAL = 1 << 0, 1 << 1
@@ -81,7 +82,8 @@ def landlock(numbers, folder, network):
     for path in SYSTEM:
         allow(path, READ | (IOCTL_DEV if path == "/dev" else 0))
     allow("/dev/null", READ | WRITE_FILE)
-    allow(folder, handled)
+    # No symlinks: the server reads and writes in this folder, and a link could lead it outside.
+    allow(folder, handled & ~MAKE_SYM)
     if LIBC.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
         fail("cannot set no_new_privs")
     syscall(restrict, ctypes.c_int(ruleset), ctypes.c_uint32(0))

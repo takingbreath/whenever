@@ -292,12 +292,6 @@ class Faces:
         return cv2.resize(part, (size, size), interpolation=cv2.INTER_CUBIC) if part.size else None
 
 
-def _unit(vector):
-    import numpy as np
-    vector = np.asarray(vector, np.float32)
-    return vector / max(float(np.linalg.norm(vector)), 1e-9)
-
-
 def _numbers(vector):
     return [round(float(v), 5) for v in vector]
 

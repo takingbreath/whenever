@@ -47,7 +47,7 @@ from channels import CHANNELS_FILE, PICTURES_DIR, ChannelError, Channels
 from connectors import ACTIONS_FILE, ActionError, Connectors, check_draft, read_secrets
 from journal import JOURNAL_FILE, Journal
 from problems import Problems
-from engine import HITS_TO_SET, SensorState, pick_frames, spread
+from engine import SensorState, pick_frames, spread
 from evidence import Evidence
 from meta_api import ApiError, Client, load_key
 from rule_runtime import place_of, seat, share_inside
@@ -88,6 +88,12 @@ CAMERAS_FILE = DATA_DIR / "cameras.json"
 STUCK_S = 30
 # A demo raises it, so visitors can add their own beside the starter Whenevers.
 MAX_RULES = int(os.environ.get("WHENEVER_MAX_RULES") or 5)
+# Wonder jobs at once. Each one spends money, and the daily limit is checked when a job starts.
+MAX_WRITING = 2
+# Finished jobs that the page can still ask about. Older ones go, so a long run keeps no list.
+MAX_JOBS = 50
+# A talk key is held for seconds. A voice session that the page never ended closes after this.
+VOICE_MAX_S = 120
 MAX_SCHEDULES = 4
 MIN_SCHEDULE_S = 60
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -916,7 +922,7 @@ class Rule:
         # What the rule's code shows, such as a count. It stays across restarts.
         self.values_file = Path(folder) / "data" / "values.json" if folder else None
         try:
-            self.values = dict(json.loads(self.values_file.read_text())) if self.values_file else {}
+            self.values = dict(json.loads(sandbox.inside(folder, "data", "values.json").read_text())) if folder else {}
         except (OSError, ValueError, TypeError):
             self.values = {}
         # A run is one event of this Whenever. The journal keeps them, so the count survives a restart.
@@ -1013,8 +1019,8 @@ class Rule:
             self.values[message["name"]] = message["value"]
             if self.values_file:
                 try:
-                    self.values_file.parent.mkdir(exist_ok=True)
-                    self.values_file.write_text(json.dumps(self.values))
+                    sandbox.inside(self.values_file.parents[1], "data").mkdir(exist_ok=True)
+                    sandbox.inside(self.values_file.parents[1], "data", "values.json").write_text(json.dumps(self.values))
                 except OSError:
                     pass
         elif kind == "log":
@@ -1777,7 +1783,7 @@ class App:
     def _read_places(self, rule):
         folder = getattr(rule, "folder", None)
         try:
-            return json.loads((Path(folder) / "data" / PLACES_FILE).read_text()) if folder else {}
+            return json.loads(sandbox.inside(folder, "data", PLACES_FILE).read_text()) if folder else {}
         except (OSError, ValueError):
             return {}
 
@@ -1786,9 +1792,8 @@ class App:
         if not folder:
             return
         try:
-            target = Path(folder) / "data"
-            target.mkdir(parents=True, exist_ok=True)
-            (target / PLACES_FILE).write_text(json.dumps(cache, indent=1))
+            sandbox.inside(folder, "data").mkdir(parents=True, exist_ok=True)
+            sandbox.inside(folder, "data", PLACES_FILE).write_text(json.dumps(cache, indent=1))
         except OSError:
             pass
 
@@ -1942,8 +1947,12 @@ class App:
                 raise writer.WriterError("That rule is no longer running.")
             if not edit and len(self.entries) >= MAX_RULES:
                 raise writer.WriterError(f"This prototype runs up to {MAX_RULES} rules.")
+            if sum(item["status"] == "working" for item in self.jobs.values()) >= MAX_WRITING:
+                raise writer.WriterError(f"Wonder is already writing {MAX_WRITING} Whenevers. Try again when one is done.")
             job = {"id": uuid.uuid4().hex[:8], "status": "working", "steps": [], "error": ""}
             self.jobs[job["id"]] = job
+            for done in [key for key, item in self.jobs.items() if item["status"] != "working"][:-MAX_JOBS]:
+                del self.jobs[done]
         args = (job, sentence, example, idle, motions, gap_s, point, old)
         threading.Thread(target=self._write, args=args, daemon=True).start()
         return job["id"]
@@ -1969,7 +1978,7 @@ class App:
             folder = sandbox.copy_rule(old.folder, rule_id) if old else sandbox.create(rule_id)
             if point in self.points:
                 pointed = self.save_pointed(point, folder, pointed)
-            previous = json.loads((Path(old.folder) / "rule.json").read_text()) if old else None
+            previous = json.loads(sandbox.inside(old.folder, "rule.json").read_text()) if old else None
             if example:
                 save_recording(folder, example, idle, motions, gap_s)
             elif old:
@@ -1982,7 +1991,7 @@ class App:
                 self.writer_usd += cost
             if fields.get("unsupported"):
                 raise writer.WriterError(fields["unsupported"])
-            (folder / "rule.json").write_text(json.dumps(
+            sandbox.inside(folder, "rule.json").write_text(json.dumps(
                 {"sentence": sentence, **fields, "writer_steps": steps}, indent=1, ensure_ascii=False))
             rule = Rule(self, rule_id, sentence, fields, folder, pointed)
             rule.paused = bool(old and old.paused)
@@ -2030,7 +2039,13 @@ class App:
             folder = sandbox.RULES_DIR / rule_id
             if not rule_id.isalnum() or not (folder / "rule.json").exists():
                 continue
-            fields = json.loads((folder / "rule.json").read_text())
+            try:
+                fields = dict(json.loads(sandbox.inside(folder, "rule.json").read_text()))
+            except (OSError, ValueError, TypeError) as e:
+                # One broken rule must not stop the server, or every restart would fail the same way.
+                self.problems.add(f"load:{rule_id}", f"A saved Whenever ({rule_id}) could not start after a restart",
+                                  "error", "Rules", str(e), "Create it again.")
+                continue
             rule = Rule(self, rule_id, fields.get("sentence", ""), fields, folder, item.get("pointed"))
             rule.paused = bool(item.get("paused"))
             rule.start()
@@ -2071,7 +2086,10 @@ class App:
 
     def code(self, rule_id):
         rule = self.entries.get(rule_id)
-        return (rule.folder / "rule.py").read_text() if rule else None
+        try:
+            return sandbox.inside(rule.folder, "rule.py").read_text() if rule else None
+        except OSError:
+            return None
 
     def tick(self):
         """A schedule runs with no camera. on_tick needs the camera, or a schedule in the rule."""
@@ -2373,14 +2391,14 @@ class App:
         point = self.points.get(point_id)
         if not point:
             return pointed
-        pictures = Path(folder) / "pointed"
+        pictures = sandbox.inside(folder, "pointed")
         pictures.mkdir(exist_ok=True)
         (pictures / "clicked.jpg").write_bytes(self.point_crop(point_id))
         pointed = {**pointed, "reference": "pointed/clicked.jpg", "also": [dict(a) for a in pointed["also"]]}
         for number, (saved, found) in enumerate(zip(pointed["also"], point.get("also", [])), 1):
             (pictures / f"also-{number}.jpg").write_bytes(found["crop"])
             saved["reference"] = f"pointed/also-{number}.jpg"
-        (Path(folder) / "pointed.json").write_text(json.dumps(
+        sandbox.inside(folder, "pointed.json").write_text(json.dumps(
             {k: v for k, v in pointed.items() if k != "box"}, indent=1, ensure_ascii=False))
         return pointed
 
@@ -2388,8 +2406,15 @@ class App:
         if self.stopped():
             raise ValueError("Today's model budget is used up, so voice is off until it starts again.")
         session = self.open_voice(self.client.key)
+        now = time.monotonic()
         with self.lock:
+            stale = [item for item in self.voices.values() if now - getattr(item, "opened", now) > VOICE_MAX_S]
+            for item in stale:
+                self.voices.pop(item.id, None)
+            session.opened = now
             self.voices[session.id] = session
+        for item in stale:
+            threading.Thread(target=item.finish, daemon=True).start()
         return session.id
 
     def voice_audio(self, voice_id, chunk):
@@ -2657,10 +2682,9 @@ class App:
             if done.returncode or not out.exists():
                 return None
             clip = out.read_bytes()
-        target = Path(folder) / "clips"
-        target.mkdir(exist_ok=True)
+        sandbox.inside(folder, "clips").mkdir(exist_ok=True)
         name = f"{int(t)}-{uuid.uuid4().hex[:6]}.mp4"
-        (target / name).write_bytes(clip)
+        sandbox.inside(folder, "clips", name).write_bytes(clip)
         return clip, f"/rule-file/{rule.id}/clips/{name}"
 
     def _buffer_video(self, camera, start, duration):
@@ -2709,10 +2733,9 @@ class App:
             if done.returncode or not out.exists():
                 return None
             clip = out.read_bytes()
-        target = Path(folder) / "clips"
-        target.mkdir(exist_ok=True)
+        sandbox.inside(folder, "clips").mkdir(exist_ok=True)
         name = f"{int(t)}-{uuid.uuid4().hex[:6]}.mp4"
-        (target / name).write_bytes(clip)
+        sandbox.inside(folder, "clips", name).write_bytes(clip)
         return clip, f"/rule-file/{rule.id}/clips/{name}"
 
     def alert_outline(self, name, tile, box):
@@ -2800,9 +2823,8 @@ class App:
             return media
         media["picture"] = jpeg_bytes(fit(chosen, CLIP_WIDTH * len(tiles or [1])))
         if rule.folder:
-            target = Path(rule.folder) / "pictures"
-            target.mkdir(exist_ok=True)
-            file = target / f"alert-{int(time.time())}-{uuid.uuid4().hex[:6]}.jpg"
+            sandbox.inside(rule.folder, "pictures").mkdir(exist_ok=True)
+            file = sandbox.inside(rule.folder, "pictures", f"alert-{int(time.time())}-{uuid.uuid4().hex[:6]}.jpg")
             file.write_bytes(media["picture"])
             media["url"] = f"/rule-file/{rule.id}/pictures/{file.name}"
             media["when"] = (event or {}).get("t") or time.time()
@@ -3354,9 +3376,8 @@ class App:
                 "box": {key: shot["box"][key] for key in ("x1", "y1", "x2", "y2", "w", "h")},
             })
             if rule.folder:
-                target = Path(rule.folder) / path
-                target.parent.mkdir(exist_ok=True)
-                shot["zoom"].save(target, "JPEG", quality=92)
+                sandbox.inside(rule.folder, Path(path).parent).mkdir(exist_ok=True)
+                shot["zoom"].save(sandbox.inside(rule.folder, path), "JPEG", quality=92)
         text = caption or f"Best pictures of {thing}"
         if check and pictures:
             self.evidence.add_step(check, {"pictures": pictures, "caption": text})
@@ -3518,8 +3539,8 @@ class App:
         for frame in frames:
             path = ""
             if rule.folder:
-                target = Path(rule.folder) / "frames" / frame.name
-                target.parent.mkdir(exist_ok=True)
+                sandbox.inside(rule.folder, "frames").mkdir(exist_ok=True)
+                target = sandbox.inside(rule.folder, "frames", frame.name)
                 # A sharp copy can arrive just after its frame, so replace an older small copy.
                 target.write_bytes(self.evidence.read_sharp(frame.name) or frame.jpeg or b"")
                 path = f"frames/{frame.name}"
@@ -4151,8 +4172,9 @@ class App:
 def load_recording(folder):
     """Returns what save_recording kept: (example, idle, motions, gap_s)."""
     def frames(label):
-        return [file.read_bytes() for file in sorted((folder / "recording" / label).glob("*.jpg"))]
-    timing = folder / "recording" / "timing.json"
+        return [sandbox.inside(folder, file.relative_to(folder)).read_bytes()
+                for file in sorted((folder / "recording" / label).glob("*.jpg"))]
+    timing = sandbox.inside(folder, "recording", "timing.json")
     saved = json.loads(timing.read_text()) if timing.exists() else {}
     return frames("example"), frames("idle"), saved.get("motions"), saved.get("gap_s")
 
@@ -4161,13 +4183,13 @@ def save_recording(folder, example, idle, motions=None, gap_s=None):
     """Keeps a person's recording with the rule, for later tests."""
     for label, frames in (("example", example), ("idle", idle)):
         if frames:
-            target = folder / "recording" / label
+            target = sandbox.inside(folder, "recording", label)
             shutil.rmtree(target, ignore_errors=True)
             target.mkdir(parents=True)
             for index, jpeg in enumerate(frames):
                 (target / f"{index:03d}.jpg").write_bytes(jpeg)
     if example:
-        (folder / "recording" / "timing.json").write_text(json.dumps({"motions": motions, "gap_s": gap_s}))
+        sandbox.inside(folder, "recording", "timing.json").write_text(json.dumps({"motions": motions, "gap_s": gap_s}))
 
 
 LOGIN_PAGE = """<!doctype html>
@@ -4282,6 +4304,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         if "/api/" not in str(args[0]):
+            # A pairing or camera link logs a phone in, so its token stays out of the log.
+            if args and isinstance(args[0], str):
+                args = (re.sub(r"/(pair|camera)/[^/ ?]+", r"/\1/…", args[0]), *args[1:])
             super().log_message(fmt, *args)
 
     def _send(self, status, body, content_type, headers=()):
@@ -4402,9 +4427,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(429, {"error": str(e)})
         if not token:
             return self._json(403, {"error": "That code did not work."})
+        self._send(200, b'{"ok": true}', "application/json", [self._cookie(token, "Strict")])
+
+    def _cookie(self, token, same_site="Lax"):
+        """The login cookie. It is Secure on a hosted server, where the page comes over HTTPS. A link from
+        an alert or a QR code needs Lax, because the browser arrives from outside the site."""
         secure = "; Secure" if self.headers.get("Host") in HOSTS else ""
-        cookie = f"whenever={token}; Path=/; Max-Age={SESSION_S}; HttpOnly; SameSite=Strict{secure}"
-        self._send(200, b'{"ok": true}', "application/json", [("Set-Cookie", cookie)])
+        return ("Set-Cookie", f"whenever={token}; Path=/; Max-Age={SESSION_S}; HttpOnly; SameSite={same_site}{secure}")
 
     def _pair_info(self, token):
         """What the pairing page on a phone needs. It names no place and no key except the public one."""
@@ -4426,8 +4455,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(302, b"", "text/plain", [("Location", f"/pair/{token}")])
         headers = [("Location", "/#/phone-camera")]
         if item["login"] and self.access.needed() and not self._logged_in():
-            secure = "; Secure" if self.headers.get("Host") in HOSTS else ""
-            headers.append(("Set-Cookie", f"whenever={self.access.grant()}; Path=/; Max-Age={SESSION_S}; HttpOnly; SameSite=Lax{secure}"))
+            headers.append(self._cookie(self.access.grant()))
         self._send(302, b"", "text/plain", headers)
 
     def _pair_finish(self, token, kind):
@@ -4448,9 +4476,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": str(e)})
         headers = []
         if kind == "push" and found and found["login"] and self.access.needed() and not self._logged_in():
-            secure = "; Secure" if self.headers.get("Host") in HOSTS else ""
-            session = self.access.grant()
-            headers.append(("Set-Cookie", f"whenever={session}; Path=/; Max-Age={SESSION_S}; HttpOnly; SameSite=Lax{secure}"))
+            headers.append(self._cookie(self.access.grant()))
         self._send(200, json.dumps({"ok": True, "label": place.get("label") or place.get("address")}).encode(),
                    "application/json", headers)
 
@@ -4530,6 +4556,13 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self):
+        try:
+            self._get()
+        except (KeyError, ValueError, TypeError):
+            # Such as a word in the query where a number goes.
+            self._json(400, {"error": "Bad request."})
+
+    def _get(self):
         if not self._allowed():
             return self._json(403, {"error": "Forbidden."})
         path, _, query = self.path.partition("?")
@@ -4567,20 +4600,20 @@ class Handler(BaseHTTPRequestHandler):
             found = self.app.channels.pairing(parts[3])
             return self._json(200 if found else 404, found or {"error": "Not found."})
         if path == "/api/state":
-            params = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
+            params = self._params(query)
             return self._json(200, self.app.status(int(params.get("after", 0)), int(params.get("results", 0))))
         if path == "/api/live.mjpg":
             return self._live_stream()
         if path.startswith("/hls/"):
             return self._hls(path[len("/hls/"):], query)
         if path == "/api/live.jpg":
-            params = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
+            params = self._params(query)
             picture = self.app.read_live(int(params.get("after", 0)))
             if not picture:
                 return self._send(204, b"", "image/jpeg")
             return self._send(200, picture[1], "image/jpeg", [("X-Seq", str(picture[0]))])
         if path == "/api/journal":
-            params = {k: unquote(v) for k, v in (part.split("=", 1) for part in query.split("&") if "=" in part)}
+            params = self._params(query)
             since = float(params["since"]) if params.get("since") else None
             until = float(params["until"]) if params.get("until") else None
             rows = self.app.journal.history(params.get("kind") or None, None, params.get("rule") or None,
@@ -4604,7 +4637,7 @@ class Handler(BaseHTTPRequestHandler):
             job = self.app.jobs.get(path.rsplit("/", 1)[1])
             return self._json(200 if job else 404, job or {"error": "Not found."})
         if path.startswith("/api/check/"):
-            params = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
+            params = self._params(query)
             t = params.get("t", "")
             check = self.app.evidence.check(unquote(path.rsplit("/", 1)[1]),
                                             float(t) if t.replace(".", "", 1).isdigit() else None)
@@ -4636,7 +4669,7 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.split("/")
             frame = None
             if len(parts) == 4:
-                params = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
+                params = self._params(query)
                 camera = params.get("camera", "")
                 if params.get("view") == "focus":
                     frame = self.app.evidence.focus_path(parts[2], parts[3])
@@ -4852,6 +4885,8 @@ class Handler(BaseHTTPRequestHandler):
                 token = self.app.channels.start_email(body.get("address"), lambda t: f"{base}/pair/{t}")
                 return self._json(200, {"token": token})
             if self.path == "/api/telegram/key":
+                if DEMO:
+                    return self._json(403, {"error": "The demo keeps its Telegram bot. Try it on your own Whenever."})
                 body = json.loads(self._read(MAX_LABEL_BYTES) or b"{}")
                 return self._json(200, {"bot": self.app.channels.set_telegram_token(body.get("key"))})
             if self.path == "/api/push/subscribe":
@@ -4914,7 +4949,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(422, {"error": str(e)})
         except (ApiError, VoiceError) as e:
             self._json(502, {"error": str(e)[:300]})
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, TypeError, AttributeError):
             self._json(400, {"error": "Bad request."})
 
     def do_DELETE(self):
@@ -4931,6 +4966,8 @@ class Handler(BaseHTTPRequestHandler):
             removed = self.app.connectors.remove(unquote(self.path.rsplit("/", 1)[1]))
             return self._json(200 if removed else 404, {"removed": removed})
         if self.path.startswith("/api/places/"):
+            if DEMO:
+                return self._json(403, {"error": "The demo keeps its alert places. Try it on your own Whenever."})
             place = unquote(self.path.rsplit("/", 1)[1])
             removed = self.app.channels.remove(place)
             if place == "ntfy" and removed:

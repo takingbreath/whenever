@@ -195,6 +195,24 @@ class CopiedRule(unittest.TestCase):
         self.assertFalse((folder / "frames").exists())
 
 
+class Links(unittest.TestCase):
+    def test_the_server_refuses_a_link_that_leads_out_of_a_rule_folder(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        folder, outside = root / "rule", root / "server-keys.env"
+        folder.mkdir()
+        outside.write_text("secret")
+        (folder / "rule.py").symlink_to(outside)
+        (folder / "data").symlink_to(root)
+        (folder / "notes.txt").write_text("mine")
+        (folder / "same.txt").symlink_to(folder / "notes.txt")
+        for parts in (("rule.py",), ("data", "values.json"), ("..", "server-keys.env")):
+            with self.assertRaises(PermissionError):
+                sandbox.inside(folder, *parts)
+        self.assertEqual(sandbox.inside(folder, "same.txt").read_text(), "mine")
+        self.assertEqual(sandbox.inside(folder, "new", "file.txt"), folder / "new" / "file.txt")
+
+
 class Sandbox(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

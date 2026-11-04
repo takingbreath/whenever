@@ -5,7 +5,6 @@ import json
 import shutil
 import sys
 import tempfile
-import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -84,6 +83,13 @@ class Drafts(unittest.TestCase):
     def test_the_host_must_be_fixed(self):
         with self.assertRaises(ActionError):
             check_draft({**LAMP, "url": "http://{host}/x"})
+
+    def test_an_action_cannot_name_the_keys_of_the_alerts(self):
+        # The alert keys share actions.env, so a request could send them to any host.
+        stolen = {**LAMP, "url": "https://example.com/?k={secret:TELEGRAM_BOT_TOKEN}",
+                  "secrets": [{"name": "TELEGRAM_BOT_TOKEN"}]}
+        with self.assertRaisesRegex(ActionError, "belongs to Whenever's alerts"):
+            check_draft(stolen)
 
     def test_every_blank_must_be_listed(self):
         with self.assertRaises(ActionError):
@@ -349,6 +355,21 @@ class App(unittest.TestCase):
             self.assertEqual(fresh.load_rules(), 1)
         back = fresh.entries["abc123"]
         self.assertEqual((back.name, back.paused, back.schedules[0].id), ("Hourly", True, "h"))
+
+    def test_a_broken_rule_file_does_not_stop_a_restart(self):
+        rules_file = Path(self.logs) / "rules.json"
+        for rule_id, text in (("good1", json.dumps({"sentence": "Every hour", "name": "Hourly", "sensors": []})),
+                              ("bad1", "{not json")):
+            folder = Path(self.logs) / "rules" / rule_id
+            folder.mkdir(parents=True)
+            (folder / "rule.json").write_text(text)
+        rules_file.write_text(json.dumps({"rules": [{"id": "bad1"}, {"id": "good1"}]}))
+        with mock.patch.object(server.sandbox, "RULES_DIR", Path(self.logs) / "rules"), \
+                mock.patch.object(server.Rule, "start"):
+            fresh = server.App(object(), self.logs, inline=True, rules_file=rules_file)
+            self.assertEqual(fresh.load_rules(), 1)
+        self.assertEqual(list(fresh.entries), ["good1"])
+        self.assertTrue(any("could not start" in p["title"] for p in fresh.problems.public()["groups"]))
 
 
 class Runtime(unittest.TestCase):

@@ -173,6 +173,25 @@ class LinuxSandbox(unittest.TestCase):
         self.assertEqual(done.stdout.split(), ["refused", "refused", "refused"], done.stderr)
         self.assertEqual((folder / "note.txt").read_text(), "ok")
 
+    @unittest.skipUnless(sys.platform == "linux", "Landlock and seccomp exist only on Linux.")
+    def test_the_jail_lets_a_rule_make_no_links(self):
+        # The server reads and writes in the folder, so a link could lead it to the server's own keys.
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder)
+        script = ("import os\ntry:\n    os.symlink('/etc/hostname', 'rule.py')\n    print('made')\n"
+                  "except PermissionError:\n    print('refused')\n")
+        python = str(Path(sys.base_prefix) / "bin" / "python3")
+        done = subprocess.run(sandbox.wrap(folder, [python, "-c", script]), capture_output=True, text=True)
+        self.assertEqual(done.stdout.split(), ["refused"], done.stderr)
+        self.assertFalse((folder / "rule.py").is_symlink())
+
+    def test_installs_take_only_built_wheels_and_no_pip_options(self):
+        with mock.patch.object(sandbox, "run", return_value=(0, "")) as run:
+            sandbox.install("/srv/rule", ["numpy"])
+            self.assertIn("--only-binary=:all:", run.call_args.args[1])
+            self.assertEqual(sandbox.install("/srv/rule", ["--index-url=http://127.0.0.1:9997/"])[0], 2)
+        self.assertEqual(run.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -853,7 +853,10 @@ def handle(call, folder, client, example, idle, progress, motions=None, sentence
     name = call["name"]
     if name == "write_file":
         path = clean_path(args["path"])
-        target = folder / path
+        try:
+            target = sandbox.inside(folder, path)
+        except PermissionError as error:
+            raise WriterError(str(error)) from None
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(args["content"])
         progress(f"Wrote {path}")
@@ -895,7 +898,7 @@ def handle(call, folder, client, example, idle, progress, motions=None, sentence
                     "\nRemove them or rewrite them, change rule.py if it needs it, and call finish."), None
         if review["rounds"] < MAX_REVIEW_ROUNDS:
             progress("A reviewer is checking the rule against your words")
-            faults = review_rule(client, sentence, args["sensors"], (folder / "rule.py").read_text())
+            faults = review_rule(client, sentence, args["sensors"], sandbox.inside(folder, "rule.py").read_text())
             if faults:
                 review["rounds"] += 1
                 progress("Reviewer found: " + faults[0])

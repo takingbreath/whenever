@@ -29,6 +29,18 @@ PROFILE = """(version 1)
 """
 
 
+def inside(folder, *parts):
+    """A path in a rule's folder. The server reads and writes there with its own rights, so a link that
+    leads out of the folder is refused. PermissionError is an OSError, so callers that skip a missing
+    file also skip such a link."""
+    root = Path(folder).resolve()
+    path = Path(folder).joinpath(*(str(part) for part in parts))
+    real = path.resolve()
+    if real != root and root not in real.parents:
+        raise PermissionError(f"{path.name} leads out of the rule's folder.")
+    return path
+
+
 def create(rule_id):
     folder = RULES_DIR / rule_id
     (folder / "data").mkdir(parents=True)
@@ -91,8 +103,12 @@ def run(folder, command, timeout=COMMAND_TIMEOUT_S, network=False):
 
 
 def install(folder, packages):
+    """Installs with the network on, so only ready-built wheels: no package's own setup code runs then.
+    A name cannot be a pip option, such as another index."""
+    if any(p.strip().startswith("-") for p in packages):
+        return 2, "A package name cannot start with -."
     quoted = " ".join("'" + p.replace("'", "") + "'" for p in packages)
-    return run(folder, f"python -m pip install --quiet {quoted}", INSTALL_TIMEOUT_S, network=True)
+    return run(folder, f"python -m pip install --quiet --only-binary=:all: {quoted}", INSTALL_TIMEOUT_S, network=True)
 
 
 def start_worker(folder):
