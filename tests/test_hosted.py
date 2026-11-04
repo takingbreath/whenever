@@ -125,6 +125,16 @@ class DailySpend(Folder):
         self.assertFalse(app.stopped())
 
 
+class ShortNote(unittest.TestCase):
+    def test_a_model_note_becomes_one_plain_line(self):
+        self.assertEqual(server.short_note("Frame 7 top-left shows left gate panel swung outward; Fram"),
+                         "Left gate panel swung outward")
+        self.assertEqual(server.short_note("man in white traditional clothing; Frame 8 top-left shows man"),
+                         "Man in white traditional clothing")
+        self.assertEqual(server.short_note("In frames 3-5, a car turns in"), "A car turns in")
+        self.assertTrue(server.short_note("word " * 60).endswith("…"))
+
+
 class CameraSites(unittest.TestCase):
     def test_sites_keep_only_cameras_that_exist_in_wall_order(self):
         sites = server.camera_sites("Home: Driveway, Gate ; Cafe: Cafe; Empty: Nowhere", ["Gate", "Cafe", "Driveway"])

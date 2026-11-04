@@ -79,6 +79,10 @@ MAX_THREADS = 200
 # The same words about the same occurrence within this time are one alert. A rule's event job and its
 # on_tick can find the same person at the same moment.
 REPEAT_S = 90
+# The same words from the same Whenever go to the phone at most once in this time; the page still lists
+# each one, marked quiet. A demo of recorded video in a loop pushed the same gate alert every 2.5 minutes.
+# 0, as on a real site, sends every alert.
+ALERT_QUIET_S = float(os.environ.get("WHENEVER_ALERT_QUIET_S") or 0)
 CAMERAS_FILE = DATA_DIR / "cameras.json"
 # Live checks that fail without a break for this long become a warning. A shorter gap is only a note.
 STUCK_S = 30
@@ -505,6 +509,19 @@ def number(value, low, high, default):
         return min(max(float(value), low), high)
     except (TypeError, ValueError):
         return default
+
+
+def short_note(text, limit=100):
+    """One plain line from a model's note: no frame numbers or picture positions, cut at the first clause.
+    "Frame 7 top-left shows a man in white at the gate; the gate..." becomes "A man in white at the gate"."""
+    text = " ".join(str(text or "").split()).split(";")[0]
+    text = re.sub(r"^(?:in\s+)?frames?\s+\d+(?:\s*(?:-|to|and)\s*\d+)?\s*(?:\([^)]*\))?\s*,?\s*", "", text, flags=re.I)
+    text = re.sub(r"^(?:the\s+)?(?:top|bottom)[- ](?:left|right)\s+(?:\w+\s+)?(?:view\s+)?(?:shows|has)\s+", "", text, flags=re.I)
+    text = re.sub(r"^shows\s+", "", text, flags=re.I)
+    text = text.strip(" .,")
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0] + "…"
+    return text[:1].upper() + text[1:]
 
 
 def camera_sites(text, cameras):
@@ -2515,6 +2532,10 @@ class App:
             media = {"picture": None, "url": self.picture_url(rule, picture), "cameras": []}
             self.trouble(rule, f"{rule.name} could not cut its picture", str(e)[:300], source="Alerts", level="note")
         seen = self._alert_people(media, text, to, rule, subject)
+        if self.quiet(rule, f"{to or ''}:{text}"):
+            self.add_feed(rule, "notify", text, url=media["url"], cameras=media["cameras"], occurrence=occurrence,
+                          places=[], mode="quiet", **seen)
+            return
         # A later note about an occurrence that already alerted, with nothing new to see, stays on the page.
         news = bool(picture) or not (occurrence and occurrence in self.threads)
         if news:
@@ -2857,6 +2878,19 @@ class App:
                 self.problems.add(f"clip:{place['id']}", f"The clip did not reach {place['label']}", "note", "Alerts",
                                   place["detail"], "The alert and its picture arrived. The clip is in Activity.", rule)
         return places, "sent"
+
+    def quiet(self, rule, text):
+        """True when this Whenever sent these words to the phone less than ALERT_QUIET_S ago."""
+        if not ALERT_QUIET_S:
+            return False
+        now = time.time()
+        key = (getattr(rule, "id", ""), " ".join(str(text or "").split()).lower())
+        with self.lock:
+            self.hushed = {k: t for k, t in getattr(self, "hushed", {}).items() if now - t < ALERT_QUIET_S}
+            if key in self.hushed:
+                return True
+            self.hushed[key] = now
+        return False
 
     def repeated(self, occurrence, text):
         """True if these words about this occurrence already went out a moment ago."""
@@ -3500,10 +3534,15 @@ class App:
         answers = result.get("answers") or []
         review = result.get("review")
         note = answers[0].get("note", "") if answers else ""
+        summary, why = note, ""
         if review:
             note = "; ".join([result.get("who", ""), *review["clues_for"][:3]]).strip("; ")
+            # The page shows one short line. The clues, such as "Frame 8 top-left shows ...", are for Why.
+            why = "; ".join(review["clues_for"][:3])
+            summary = short_note(result.get("who", "") or (review["clues_for"] or [""])[0])
         return {
-            "check": check, "proof": proof, "frames": self._share(rule, frames), "note": note,
+            "check": check, "proof": proof, "frames": self._share(rule, frames), "note": note, "why": why,
+            "summary": summary,
             "facts": answers[0].get("facts", []) if answers else [],
             "boxes": [{k: b[k] for k in ("x1", "y1", "x2", "y2", "w", "h")} for b in result.get("boxes") or []],
         }
@@ -3989,7 +4028,10 @@ class App:
                 values.update(tile=tile, wall=list(self.wall), camera=self.cameras[tile] if tile < len(self.cameras) else "")
             if sensor.target:
                 values["what"] = sensor.target
-            self.journal.add("event", rule.id, rule.name, sensor.id, text=detail["note"], values=values, t=t)
+            if detail.get("why"):
+                values["why"] = detail["why"][:600]
+            self.journal.add("event", rule.id, rule.name, sensor.id, text=detail.get("summary") or detail["note"],
+                             values=values, t=t)
             rule.send({"type": "on", "sensor": sensor.id, "t": t, "event": detail})
         if event == "moment":
             self.journal.add("end", rule.id, rule.name, sensor.id, seconds=0.0, t=t, values=ending)

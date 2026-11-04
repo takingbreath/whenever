@@ -496,6 +496,19 @@ class Alerts(unittest.TestCase):
         self.assertEqual((alert["people"][0]["name"], alert["story"][0]["text"]), ("Asha", "T3 hand up"))
         self.assertIn("cameras", alert)
 
+    def test_a_repeated_alert_in_the_quiet_time_reaches_only_the_page(self):
+        name = self.frame(100.0)
+        self.app.analyzer.alert_people = lambda cameras, t, subject=None: {}
+        sent = []
+        self.app._deliver = lambda *a, **k: sent.append(a[2]) or ([], "here")
+        self.app.alert_clip = lambda *a, **k: None
+        with mock.patch.object(self.server, "ALERT_QUIET_S", 900):
+            self.app._notify(self.rule, "Someone opened the gate.", name, check="c1")
+            self.app._notify(self.rule, "Someone opened the gate.", name, check="c2")
+        self.assertEqual(sent, ["Someone opened the gate."])
+        quiet = [i for i in self.app.feed if i["kind"] == "notify" and i.get("mode") == "quiet"]
+        self.assertEqual(len(quiet), 1)
+
     def test_a_clip_of_saved_frames_starts_at_its_first_frame(self):
         for t in (96.0, 97.5, 99.0, 101.0):
             self.frame(t)

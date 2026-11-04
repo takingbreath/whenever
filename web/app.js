@@ -2872,6 +2872,7 @@ function sentNote(row) {
   const places = row.values?.places || [];
   const how = row.values?.how || row.values?.mode;
   if (row.kind === "action" && row.values?.ok === false) return `The alert did not go out at ${clock(row.t)}`;
+  if (how === "quiet") return `Shown here at ${clock(row.t)}, not sent: the same alert went out a few minutes ago`;
   if (how === "here" || (!places.length && row.kind === "notify")) return `Shown here at ${clock(row.t)}`;
   const where = places.length ? joinList(places) : "your phone";
   // The picture goes out at once. The row is written when the clip has followed it.
