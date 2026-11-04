@@ -132,6 +132,19 @@ class Analyzer(unittest.TestCase):
         self.assertEqual([p["name"] for p in out["cameras"]["Cafe"]["places"]], ["T1", "Window", "T3"])
         self.assertEqual(self.live.floor()["places"][1]["camera"], "Cafe")
 
+    def test_a_new_group_at_a_table_starts_a_new_visit(self):
+        self.learn()
+        guest = (0.12, 0.42, 0.20, 0.62)   # sits at T2
+        for t in range(10, 310, 10):
+            self.look(t, [person(guest)])
+        # The guest leaves, and 20 s later someone new sits at the same table, inside the 30 s gap.
+        self.look(310, [])
+        for t in range(330, 345, 2):
+            out = self.look(t, [person(guest)])
+        t2 = out["cameras"]["Cafe"]["places"][1]
+        self.assertLess(t2["since_s"], 30, "the new group's visit starts now, not at the first guest's")
+        self.assertEqual([e["text"] for e in out["events"]][-2:], ["T2 left after 5 min", "T2 seated"])
+
     def test_a_guest_sits_waits_is_served_calls_and_leaves(self):
         self.learn()
         guest = (0.12, 0.42, 0.20, 0.62)   # sits at T2, the left table of the lower row

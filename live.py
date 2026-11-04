@@ -195,6 +195,7 @@ class Table:
     def __init__(self, place_id, name, box):
         self.id, self.name, self.box = place_id, name, tuple(box)
         self.count, self.visit_start, self.visit_seen = 0, None, 0.0
+        self.visit_guests = set()   # track ids of the people of this visit
         self.staff_t = None
         self.state, self.note = "free", ""
 
@@ -788,16 +789,27 @@ class Analyzer:
                       and not self._staff(tr, t)]
             table.count = len(guests)
             if guests:
-                if table.visit_start is None or t - table.visit_seen > VISIT_GAP_S:
+                ids = {tr.id for tr in guests}
+                # A new group at a table is a new visit, even within the gap, once nobody of the old group is
+                # still in view: on the demo's looping cafe, one visit had run for over an hour.
+                old_here = {tr.id for tr in cam.tracks.values() if t - tr.last <= SEAT_GAP_S} & table.visit_guests
+                new_group = table.visit_start is not None and not (table.visit_guests & ids) and not old_here
+                if new_group:
+                    minutes = max(1, round((table.visit_seen - table.visit_start) / 60))
+                    self._event(cam.name, "left", f"{table.name} left after {minutes} min", None, picture, table.box, t)
+                if table.visit_start is None or t - table.visit_seen > VISIT_GAP_S or new_group:
                     table.visit_start = min(tr.seated_since or t for tr in guests)
+                    table.visit_guests = set()
                     table.staff_t = None
                     named = next((self._name(tr) for tr in guests if self._name(tr)), None)
                     self._event(cam.name, "seated", f"{table.name} seated", named, picture, table.box, t)
+                table.visit_guests |= ids
                 table.visit_seen = t
             elif table.visit_start is not None and t - table.visit_seen >= VISIT_GAP_S:
                 minutes = max(1, round((table.visit_seen - table.visit_start) / 60))
                 self._event(cam.name, "left", f"{table.name} left after {minutes} min", None, picture, table.box, t)
                 table.visit_start = None
+                table.visit_guests = set()
             hand = any(tr.hand_since is not None and (tr.seated_at == table.name or tr.place == table.name)
                        for tr in cam.tracks.values() if tr.last == t)
             since = t - table.visit_start if table.visit_start is not None else None
