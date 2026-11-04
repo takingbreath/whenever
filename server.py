@@ -4054,8 +4054,11 @@ class App:
         """
         if page != self.active_page:
             return {"results": [], "inactive": True}
-        if self.stopped():
+        # A demo that nobody watches keeps nothing. A used-up budget stops only the paid checks: the
+        # free overlay, the moment index and the saved footage go on.
+        if self.idle():
             return {"results": [], "stopped": True}
+        over = self.stopped()
         self.last_frame = time.time()
         for tile in turning:
             self.turned_tiles[tile] = max(t, self.turned_tiles.get(tile, t))
@@ -4067,7 +4070,8 @@ class App:
         with self.lock:
             if name:
                 self.timeline.append(Frame(t, None, name, motion))
-            pairs = [(rule, sensor) for rule in self.entries.values() if not rule.paused for sensor in rule.sensors]
+            pairs = [] if over else [(rule, sensor) for rule in self.entries.values() if not rule.paused
+                                     for sensor in rule.sensors]
         results = []
         for rule, sensor in pairs:
             due = self._due(sensor, t)

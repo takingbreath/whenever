@@ -92,6 +92,20 @@ class DailySpend(Folder):
         with mock.patch.object(server, "SPEND_ALSO", (other,)):
             self.assertFalse(app.stopped())
 
+    def test_a_used_budget_keeps_the_footage_but_pays_for_no_check(self):
+        from io import BytesIO
+        from PIL import Image
+        jpeg = BytesIO()
+        Image.new("RGB", (64, 36)).save(jpeg, "JPEG")
+        app = server.App(object(), self.folder, inline=True)
+        app.writer_usd = server.SPEND_LIMIT_USD
+        self.assertTrue(app.frame(jpeg.getvalue(), 1.0)["stopped"])
+        self.assertEqual(len(app.timeline), 1, "the free overlay and the moment index still get the frame")
+        with mock.patch.object(server, "IDLE_PAUSE_S", 600):
+            app.page_seen -= 601
+            app.frame(jpeg.getvalue(), 2.0)
+        self.assertEqual(len(app.timeline), 1, "a demo that nobody watches keeps nothing")
+
     def test_a_demo_sleeps_while_nobody_has_it_open(self):
         app = server.App(object(), self.folder, inline=True)
         with mock.patch.object(server, "IDLE_PAUSE_S", 600):
