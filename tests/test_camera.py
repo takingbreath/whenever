@@ -48,6 +48,7 @@ class Command(unittest.TestCase):
         self.assertNotIn("-re", live)
         file = camera.ffmpeg_command("clip.webm")
         self.assertIn("-re", file)
+        self.assertEqual(file[file.index("-stream_loop") + 1], "-1", "a file plays in a loop, as a camera would")
         self.assertNotIn("tcp", file)
 
     def test_an_ezviz_camera_reads_the_account_stream_from_a_pipe(self):

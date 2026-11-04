@@ -194,7 +194,8 @@ def ffmpeg_command(address):
     elif address.startswith("rtsp"):
         source = ["-rtsp_transport", "tcp", "-timeout", str(CONNECT_TIMEOUT_US), "-i", address]
     else:
-        source = [*([] if is_live(address) else ["-re"]), "-i", address]
+        # A video file plays in a loop, as a camera would, the same as through the media server.
+        source = [*([] if is_live(address) else ["-re", "-stream_loop", "-1"]), "-i", address]
     if FAST_DECODE and is_live(address):
         source = ["-skip_loop_filter", "all", *source]
     return ["ffmpeg", "-loglevel", "error", *source, "-an",

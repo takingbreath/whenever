@@ -910,6 +910,15 @@ class Analyzer:
         with self.lock:
             self._event((cameras or self._names() or [""])[0], "alert", text, None, None, None, t)
 
+    def recheck(self):
+        """Someone was just tagged or named: every unnamed person in view looks again at once, so the name
+        shows within seconds instead of at the next minute's look."""
+        with self.lock:
+            for cam in self.cameras.values():
+                for track in cam.tracks.values():
+                    if track.who is None:
+                        track.look_t = -1e9
+
     def told(self, to, cameras, t=None):
         """An alert to named places, such as "Waiter", while a hand is up (or was, in the last TOLD_S) on
         these cameras: that person was told, and the page shows it."""

@@ -3168,7 +3168,9 @@ class App:
             found = detect.detect(data, ["person"], 0.3)
             if found:
                 box = max(found, key=lambda f: (f["box"][2] - f["box"][0]) * (f["box"][3] - f["box"][1]))["box"]
-        return self.people.tag(name, picture, box, note, by="person", role=role)
+        person = self.people.tag(name, picture, box, note, by="person", role=role)
+        self.analyzer.recheck()
+        return person
 
     def page_picture(self, url):
         """The bytes of a picture by the address that the page shows it at, or None."""
@@ -4653,6 +4655,7 @@ class Handler(BaseHTTPRequestHandler):
                     if body.get("visitor"):
                         person = self.app.people.name_visitor(str(body["visitor"]), body.get("name"),
                                                               body.get("role") or "", body.get("note") or "")
+                        self.app.analyzer.recheck()
                     else:
                         person = self.app.tag_from_page(body.get("picture"), body.get("name"), body.get("note") or "",
                                                         body.get("box"), body.get("role"))

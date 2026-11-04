@@ -256,6 +256,24 @@ class Analyzer(unittest.TestCase):
         self.assertEqual((seen["name"], seen["by"], seen["sure"]), ("Ravi", "look", round(0.99 * 0.8, 3)))
         self.assertEqual(self.app.people.page(ravi["id"])["sightings"][0]["by"], "look")
 
+    def test_a_new_tag_makes_unnamed_people_look_again_at_once(self):
+        self.app.embedder = FakeLooks()
+        start = time.time()
+        for i in range(7):
+            self.look(start + i, [person(GUEST)], picture=frame_picture(0, (0, 90, 0)))
+        while self.live.looks:
+            self.live.add_look(*self.live.looks.popleft())
+        clothes = np.zeros((64, 64, 3), np.uint8)
+        clothes[:, :, 1] = 90
+        self.app.people.tag("Ravi", clothes)
+        self.live.recheck()
+        # Without the recheck, the next look would wait a minute (LOOK_EVERY_S).
+        self.look(start + 8, [person(GUEST)], picture=frame_picture(0, (0, 90, 0)))
+        while self.live.looks:
+            self.live.add_look(*self.live.looks.popleft())
+        seen = self.look(start + 9, [person(GUEST)], picture=frame_picture(0, (0, 90, 0)))["cameras"]["Cafe"]["people"][0]
+        self.assertEqual(seen["name"], "Ravi")
+
     def test_heat_and_a_search_in_words(self):
         red = (220, 10, 10)
         for t in range(1, 8):
