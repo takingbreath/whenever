@@ -10,8 +10,11 @@ seed=/srv/whenever/demo/seed.tar.gz
 
 case "${1:-}" in
   save)
+    # The demo writes its files all the time, so it stops for the few seconds of the copy.
+    systemctl stop whenever-demo-cameras whenever-demo
     tar -C "$app" -czf "$seed" data rules
     chown whenever:whenever "$seed"
+    systemctl start whenever-demo whenever-demo-cameras
     echo "Saved the demo's starting point."
     ;;
   restore)
