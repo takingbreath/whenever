@@ -1,0 +1,11 @@
+# Caddy site for the demo Whenever. Copy it to /etc/caddy/whenever-demo.caddy, put the demo's host
+# names in place of HOST, and add "import whenever-demo.caddy" to /etc/caddy/Caddyfile.
+
+HOST {
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        Referrer-Policy "no-referrer"
+        -Server
+    }
+    reverse_proxy 127.0.0.1:8788
+}

@@ -1,0 +1,40 @@
+# A demo Whenever beside the real one, behind its own access code. Its cameras play recorded video in a
+# loop (see whenever-demo-cameras.service), so visitors can try every feature without the real cameras.
+# It has its own data, rules, people and alerts in /srv/whenever/demo/app, and a small model budget of its
+# own inside the owner's budget (settings.env). Install: deploy/demo/setup.sh.
+
+[Unit]
+Description=Whenever demo: recorded cameras in a loop, behind its own access code
+After=network-online.target whenever-demo-media.service
+Wants=network-online.target
+
+[Service]
+User=whenever
+Group=whenever
+WorkingDirectory=/srv/whenever/demo/app
+Environment=WHENEVER_PORT=8788
+Environment=WHENEVER_PUBLIC=1
+Environment=WHENEVER_LOGS_GB=8
+EnvironmentFile=-/srv/whenever/demo/settings.env
+ExecStart=/srv/whenever/venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+# The real cameras come first on this server.
+Nice=5
+CPUQuota=400%
+
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/whenever/demo
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=8G
+
+[Install]
+WantedBy=multi-user.target

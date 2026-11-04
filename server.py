@@ -80,7 +80,8 @@ REPEAT_S = 90
 CAMERAS_FILE = DATA_DIR / "cameras.json"
 # Live checks that fail without a break for this long become a warning. A shorter gap is only a note.
 STUCK_S = 30
-MAX_RULES = 5
+# A demo raises it, so visitors can add their own beside the starter Whenevers.
+MAX_RULES = int(os.environ.get("WHENEVER_MAX_RULES") or 5)
 MAX_SCHEDULES = 4
 MIN_SCHEDULE_S = 60
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -257,6 +258,20 @@ PRICE_SEE = 0.0025
 SPEND_LIMIT_USD = float(os.environ.get("WHENEVER_SPEND_LIMIT") or 5.00)
 # Extra money for one day only, as "YYYY-MM-DD:USD", several with commas. It ends at that day's midnight.
 SPEND_EXTRA = os.environ.get("WHENEVER_SPEND_EXTRA") or ""
+# Other Whenever servers that share this owner's budget, such as a demo beside the real one: the paths of
+# their spend.json files, with commas. Today's limit counts their spend too, so together they stay inside it.
+SPEND_ALSO = tuple(Path(p.strip()) for p in os.environ.get("WHENEVER_SPEND_ALSO", "").split(",") if p.strip())
+# The limit for all those servers together, plus the same one-day extras. Without it, this server's own
+# limit is also the limit for all of them. A demo has a small limit of its own and the owner's limit here,
+# so it can never use up the whole day's money of the real cameras.
+SPEND_SHARED_USD = float(os.environ.get("WHENEVER_SPEND_SHARED") or 0)
+# A demo plays recorded video all day. With no page open for this long, it stops paying for checks until a
+# visitor comes back. 0 means never, as on a real site, where the rules must keep watching.
+IDLE_PAUSE_S = float(os.environ.get("WHENEVER_IDLE_PAUSE_S") or 0)
+# A demo server says so on its pages: its cameras play recorded video in a loop.
+DEMO = os.environ.get("WHENEVER_DEMO", "") == "1"
+# Groups of cameras for the camera picker, such as "Home: Gate, Driveway; Cafe: Cafe".
+SITES = os.environ.get("WHENEVER_SITES", "")
 
 STATIC = {
     "/": ("web/index.html", "text/html; charset=utf-8"),
@@ -422,14 +437,37 @@ def number(value, low, high, default):
         return default
 
 
-def spend_limit(day):
-    """A day's model budget: the standing limit, plus any extra that the owner gave for that day alone."""
+def camera_sites(text, cameras):
+    """The camera picker's groups from "Home: Gate, Driveway; Cafe: Cafe", keeping only cameras that exist,
+    in the wall's order. {} when no groups are set."""
+    sites = {}
+    for part in text.split(";"):
+        name, _, names = part.partition(":")
+        wanted = {n.strip() for n in names.split(",") if n.strip()}
+        members = [camera for camera in cameras if camera in wanted]
+        if name.strip() and members:
+            sites[name.strip()] = members
+    return sites
+
+
+def spend_extra(day):
+    """The extra money that the owner gave for that day alone."""
     extra = 0.0
     for item in SPEND_EXTRA.split(","):
         date, _, usd = item.strip().partition(":")
         if date == str(day):
             extra += number(usd, 0, 1000, 0)
-    return SPEND_LIMIT_USD + extra
+    return extra
+
+
+def spend_limit(day):
+    """A day's model budget for this server: the standing limit, plus any extra for that day."""
+    return SPEND_LIMIT_USD + spend_extra(day)
+
+
+def shared_limit(day):
+    """A day's model budget for this server and the servers that share its budget."""
+    return SPEND_SHARED_USD + spend_extra(day) if SPEND_SHARED_USD else spend_limit(day)
 
 
 def clean_watch(watch, pattern, target, starts_off):
@@ -1016,6 +1054,8 @@ class App:
         self.spend_flagged = None
         self.spend_file = SPEND_FILE if phone_file else None
         self.spend_saved = None
+        self.others_read = (0.0, 0.0)
+        self.page_seen = time.time()
         self._load_spend()
         self.camera_starts = deque(maxlen=20)
         self.media_paths = (0.0, {})
@@ -1034,6 +1074,36 @@ class App:
     def spend(self):
         return self.see_calls * PRICE_SEE + self.spark_usd + self.writer_usd
 
+    def spend_others(self):
+        """Today's spend of the other servers on the same budget. Read at most every 10 s."""
+        if not SPEND_ALSO:
+            return 0.0
+        if time.time() - self.others_read[0] < 10:
+            return self.others_read[1]
+        total = 0.0
+        for path in SPEND_ALSO:
+            try:
+                saved = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if saved.get("day") == str(self.spend_day):
+                total += int(saved.get("see_calls") or 0) * PRICE_SEE + float(saved.get("spark_usd") or 0) + \
+                    float(saved.get("writer_usd") or 0)
+        self.others_read = (time.time(), total)
+        return total
+
+    def spend_shared(self):
+        """What counts against the shared limit: this server's spend and that of the servers beside it."""
+        return self.spend() + self.spend_others()
+
+    def over_budget(self):
+        """True when today's money is used up: this server's own, or all the servers' together."""
+        return self.spend() >= spend_limit(self.spend_day) or self.spend_shared() >= shared_limit(self.spend_day)
+
+    def idle(self):
+        """A demo with no page open for IDLE_PAUSE_S sleeps: nobody sees its checks, so it does not pay."""
+        return bool(IDLE_PAUSE_S) and time.time() - self.page_seen > IDLE_PAUSE_S
+
     def _load_spend(self):
         try:
             saved = json.loads(self.spend_file.read_text()) if self.spend_file else {}
@@ -1045,7 +1115,8 @@ class App:
             self.spark_usd = float(saved.get("spark_usd") or 0)
             self.writer_usd = float(saved.get("writer_usd") or 0)
         if self.spend() < spend_limit(self.spend_day):
-            # The limit was raised, or a warning stayed open from an older run.
+            # The limit was raised, or a warning stayed open from an older run. Servers that share the budget
+            # are not read yet here: stopped() counts them and opens the warning again if it must.
             self.problems.resolve(f"spend:{self.spend_day}")
 
     def _save_spend(self):
@@ -1077,8 +1148,10 @@ class App:
         """One honest line on whether a Whenever can see what it needs right now: {"level", "text"}."""
         if rule.paused:
             return {"level": "off", "text": "Stopped"}
-        if self.spend() >= spend_limit(self.spend_day):
+        if self.over_budget():
             return {"level": "warn", "text": "Paused until midnight: today's model budget is used up"}
+        if self.idle():
+            return {"level": "off", "text": "Sleeping: nobody has the demo open"}
         if self.cameras and time.time() - max(self.live_at, self.last_frame) > CAMERA_LOST_S:
             since = max(self.live_at, self.last_frame)
             when = f" since {datetime.fromtimestamp(since, ZONE):%H:%M}" if since else ""
@@ -1097,7 +1170,9 @@ class App:
 
     def stopped(self):
         self._new_day()
-        if self.spend() < spend_limit(self.spend_day):
+        if self.idle():
+            return True
+        if not self.over_budget():
             if self.spend_flagged == self.spend_day:
                 # The owner gave more for today.
                 self.spend_flagged = None
@@ -1107,7 +1182,9 @@ class App:
             return True
         self.spend_flagged = self.spend_day
         self.problems.add(f"spend:{self.spend_day}", "Whenever paused for today: the model budget is used up", "warn",
-                          "Spending", f"Spent ${self.spend():.2f} of ${spend_limit(self.spend_day):.2f} on {self.spend_day}.",
+                          "Spending", f"Spent ${self.spend():.2f} of ${spend_limit(self.spend_day):.2f} on {self.spend_day}"
+                          + (f", and ${self.spend_shared():.2f} of ${shared_limit(self.spend_day):.2f} with the "
+                             "servers that share this budget." if SPEND_ALSO else "."),
                           "Whenever starts again at midnight. The person who runs this server can raise the daily budget.")
         return True
 
@@ -1718,6 +1795,7 @@ class App:
         return max(rates, default=DEFAULT_CAPTURE_FPS)
 
     def status(self, after=0, after_result=0):
+        self.page_seen = time.time()
         with self.lock:
             return {
                 "rules": [rule.public() for rule in self.entries.values()],
@@ -1747,7 +1825,10 @@ class App:
                 # Pictures that the local detector read since the server started. They cost nothing.
                 "detect_runs": self.detect_runs,
                 "spend_usd": round(self.spend(), 4),
+                "spend_shared_usd": round(self.spend_shared(), 4),
                 "spend_limit_usd": spend_limit(self.spend_day),
+                "demo": DEMO,
+                "sites": camera_sites(SITES, self.cameras),
                 "stopped": self.stopped(),
                 "problems": [{k: g[k] for k in ("id", "level", "source", "title", "hint", "rule_id", "count", "last")}
                              for g in self.problems.open()],
@@ -4386,6 +4467,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.app.camera_kinds.turned(name, time.time())
                 return self._json(200, {"kind": self.app.camera_kind(name) if name in self.app.cameras else ""})
             if self.path in ("/api/cameras/remove", "/api/cameras/restore"):
+                if DEMO:
+                    # Many people share one demo. One of them must not turn its cameras off for the others.
+                    return self._json(403, {"error": "The demo keeps its cameras. Try it on your own Whenever."})
                 body = json.loads(self._read(MAX_LABEL_BYTES) or b"{}")
                 name = str(body.get("camera") or "")[:40]
                 if not name or (self.path.endswith("remove") and name not in self.app.cameras):

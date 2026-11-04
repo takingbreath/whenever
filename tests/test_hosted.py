@@ -70,6 +70,46 @@ class DailySpend(Folder):
         self.assertEqual(app.spend(), 0)
         self.assertEqual(app.status()["spend_usd"], 0)
 
+    def test_a_server_beside_this_one_shares_the_budget(self):
+        other = Path(self.folder) / "other_spend.json"
+        app = server.App(object(), self.folder, inline=True)
+        other.write_text(json.dumps({"day": str(app.spend_day), "writer_usd": server.SPEND_LIMIT_USD}))
+        with mock.patch.object(server, "SPEND_ALSO", (other,)):
+            self.assertTrue(app.stopped())
+            self.assertEqual(app.status()["spend_usd"], 0)
+            self.assertEqual(app.status()["spend_shared_usd"], round(server.SPEND_LIMIT_USD, 4))
+        # A demo with a small limit of its own still stops at its own limit.
+        with mock.patch.object(server, "SPEND_ALSO", (other,)), mock.patch.object(server, "SPEND_SHARED_USD", 100), \
+                mock.patch.object(server, "SPEND_LIMIT_USD", 1):
+            app.others_read = (0.0, 0.0)
+            self.assertFalse(app.stopped())
+            app.writer_usd = 1
+            self.assertTrue(app.stopped())
+        app.writer_usd = 0
+        # Yesterday's spend of the other server does not count.
+        other.write_text(json.dumps({"day": "2000-01-01", "writer_usd": server.SPEND_LIMIT_USD}))
+        app.others_read = (0.0, 0.0)
+        with mock.patch.object(server, "SPEND_ALSO", (other,)):
+            self.assertFalse(app.stopped())
+
+    def test_a_demo_sleeps_while_nobody_has_it_open(self):
+        app = server.App(object(), self.folder, inline=True)
+        with mock.patch.object(server, "IDLE_PAUSE_S", 600):
+            self.assertFalse(app.stopped())
+            app.page_seen -= 601
+            self.assertTrue(app.stopped())
+            self.assertFalse(app.status()["stopped"], "a page that asks for the status wakes it")
+        # A real site never sleeps.
+        app.page_seen -= 10_000
+        self.assertFalse(app.stopped())
+
+
+class CameraSites(unittest.TestCase):
+    def test_sites_keep_only_cameras_that_exist_in_wall_order(self):
+        sites = server.camera_sites("Home: Driveway, Gate ; Cafe: Cafe; Empty: Nowhere", ["Gate", "Cafe", "Driveway"])
+        self.assertEqual(sites, {"Home": ["Gate", "Driveway"], "Cafe": ["Cafe"]})
+        self.assertEqual(server.camera_sites("", ["Gate"]), {})
+
 
 class LinuxSandbox(unittest.TestCase):
     def test_linux_uses_the_jail(self):

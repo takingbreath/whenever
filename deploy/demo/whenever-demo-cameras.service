@@ -1,0 +1,32 @@
+# The demo's cameras: camera.py plays each recorded clip in /srv/whenever/demo/footage in a loop, as a
+# camera would send it, through the demo's own media server. camera.env in /srv/whenever/demo/app lists
+# the clips (deploy/demo/camera.env.demo). It uses the demo server's own access code.
+
+[Unit]
+Description=Whenever demo: recorded clips played as cameras
+After=whenever-demo.service whenever-demo-media.service
+Wants=whenever-demo.service whenever-demo-media.service
+
+[Service]
+User=whenever
+Group=whenever
+WorkingDirectory=/srv/whenever/demo/app
+Environment=WHENEVER_PORT=8788
+Environment=WHENEVER_MEDIA=rtsp://127.0.0.1:8564
+Environment=WHENEVER_FULL_WIDTH=1280
+Environment=WHENEVER_READ_FPS=4
+Environment=WHENEVER_LIVE_WIDTH=1280
+ExecStart=/srv/whenever/venv/bin/python camera.py
+Restart=always
+RestartSec=10
+Nice=10
+CPUQuota=300%
+MemoryMax=4G
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/whenever/demo
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

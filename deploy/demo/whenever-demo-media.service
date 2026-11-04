@@ -1,0 +1,31 @@
+# The demo's own MediaMTX: the same settings as the real one (deploy/mediamtx.yml) on other local ports,
+# with a 2-hour buffer in /srv/whenever/demo/media, so demo clips never mix with the real cameras.
+
+[Unit]
+Description=Whenever demo: media server for the recorded cameras
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=whenever
+Group=whenever
+WorkingDirectory=/srv/whenever/demo/media
+Environment=MTX_APIADDRESS=127.0.0.1:9987
+Environment=MTX_PLAYBACKADDRESS=127.0.0.1:9986
+Environment=MTX_RTSPADDRESS=127.0.0.1:8564
+Environment=MTX_RTPADDRESS=127.0.0.1:8010
+Environment=MTX_RTCPADDRESS=127.0.0.1:8011
+Environment=MTX_HLSADDRESS=127.0.0.1:8898
+Environment=MTX_PATHDEFAULTS_RECORDDELETEAFTER=2h
+ExecStart=/srv/whenever/media/mediamtx /srv/whenever/demo/app/deploy/mediamtx.yml
+Restart=always
+RestartSec=5
+Nice=5
+MemoryMax=2G
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/whenever/demo/media
+
+[Install]
+WantedBy=multi-user.target
