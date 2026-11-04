@@ -30,7 +30,15 @@ Measured on 5 November 2026 on the demo server, in tests that the owner approved
 
 A job that Wonder does not finish still counts the turns it paid for ([writer.py:1066](../writer.py#L1066)).
 
-**A gap that we found in the code.** The writer's cost adds Wonder's own turns only ([writer.py:1047](../writer.py#L1047)). It does not add the two reviewers' Wonder calls ([writer.py:676](../writer.py#L676), [writer.py:711](../writer.py#L711)), or Spark's checks of a recorded example ([writer.py:832](../writer.py#L832)). So the three Wonder costs above, and the daily counter, are probably lower than the real spend. We did not measure the gap.
+**A gap that we found, and fixed.** Until commit `a1d2b0a`, the writer's cost added Wonder's own turns only. It left out the two reviewers' Wonder calls and Spark's checks of a recorded example. So the three Wonder costs above are lower than the real spend. Since `a1d2b0a`, a metered client counts every call of a writing job (`Metered` in [writer.py](../writer.py)). Two rules written after the fix, the demo's gate rule for day and night and its cafe food rule, cost $0.73 together.
+
+## Measured runs on 5 November 2026
+
+| Run | Cost | Kind |
+|---|---|---|
+| The labelled evaluation: two rules on 10.7 minutes of evaluation video ([README.md](README.md)) | $1.33 | Measured, from the evaluation server's counter, before and after the run |
+| Wonder writes the evaluation's hand rule | $0.62 | Measured by the counter of that time, so too low (see the gap above) |
+| The demo's four rules, woken on a free count, until each had sent real alerts (about 13 minutes with a page open) | about $2.10 | Measured, from the demo's counter |
 
 ## Running costs while a page watches
 
