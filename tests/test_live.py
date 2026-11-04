@@ -335,6 +335,27 @@ class Analyzer(unittest.TestCase):
         seen = self.look(start + 9, [person(GUEST)], picture=frame_picture(0, (0, 90, 0)))["cameras"]["Cafe"]["people"][0]
         self.assertEqual(seen["name"], "Ravi")
 
+    def test_a_name_from_clothes_gives_way_to_a_nearer_tag(self):
+        self.app.embedder = FakeLooks()
+        start = time.time()
+        clothes = np.zeros((64, 64, 3), np.uint8)
+        clothes[:, :, 1] = 90
+        self.app.people.tag("Waiter Asha", clothes, role="staff")
+        for i in range(7):
+            self.look(start + i, [person(GUEST)], picture=frame_picture(0, (0, 90, 0)))
+        while self.live.looks:
+            self.live.add_look(*self.live.looks.popleft())
+        seen = self.look(start + 8, [person(GUEST)], picture=frame_picture(0, (0, 90, 0)))["cameras"]["Cafe"]["people"][0]
+        self.assertEqual(seen["name"], "Waiter Asha")
+        # Someone tags this guest: two tagged people now wear the same clothes, so clothes name nobody.
+        self.app.people.tag("Ravi", clothes)
+        self.live.recheck()
+        self.look(start + 9, [person(GUEST)], picture=frame_picture(0, (0, 90, 0)))
+        while self.live.looks:
+            self.live.add_look(*self.live.looks.popleft())
+        seen = self.look(start + 10, [person(GUEST)], picture=frame_picture(0, (0, 90, 0)))["cameras"]["Cafe"]["people"][0]
+        self.assertIsNone(seen["name"])
+
     def test_heat_and_a_search_in_words(self):
         red = (220, 10, 10)
         for t in range(1, 8):

@@ -658,10 +658,16 @@ class Analyzer:
                 self.day_looks.setdefault(track.who["id"], []).append(
                     {"v": vector, "camera": camera, "sure": track.who["sure"], "t": t, "who": dict(track.who)})
                 self.day_looks[track.who["id"]] = self.day_looks[track.who["id"]][-people.MAX_LOOKS:]
-            elif track.who is None:
+            elif track.who is None or track.who.get("by") == "look":
+                # A name from clothes is checked again at each look, so a later tag can correct it: on the
+                # demo, a seated guest in a dark jacket kept the dark-clothed waiter's name.
+                was = track.who
+                track.who = None
                 self._carry(cam, track, vector, t)
                 if track.who is None:
                     self._tagged_look(cam, track, vector, t)
+                if was and track.who and track.who.get("id") == was.get("id"):
+                    track.who = dict(was, score=track.who.get("score"), sure=track.who.get("sure"))
             carried = dict(track.who) if track.who and track.who.get("by") == "look" and not track.sighting else None
             body = np.asarray(crop.convert("RGB"))[:, :, ::-1].copy() if carried else None
             row = self._track_row(track)
@@ -957,7 +963,7 @@ class Analyzer:
         with self.lock:
             for cam in self.cameras.values():
                 for track in cam.tracks.values():
-                    if track.who is None:
+                    if track.who is None or track.who.get("by") == "look":
                         track.look_t = -1e9
 
     def told(self, to, cameras, t=None):
