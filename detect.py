@@ -49,6 +49,7 @@ POSE_PAD = 1.25           # how much room around a person's box the model sees, 
 POSE_MEAN = (123.675, 116.28, 103.53)
 POSE_STD = (58.395, 57.12, 57.375)
 POINT_MIN = 0.3           # a body point less sure than this counts as not seen
+HAND_MIN = 0.45           # a wrist must be at least this sure to say that a hand is up
 KEYPOINTS = ("nose", "left eye", "right eye", "left ear", "right ear", "left shoulder", "right shoulder",
              "left elbow", "right elbow", "left wrist", "right wrist", "left hip", "right hip", "left knee",
              "right knee", "left ankle", "right ankle")
@@ -272,14 +273,18 @@ def poses(picture, boxes):
         # Each axis has 2 bins a pixel of the model's picture.
         pixels = [(left + xs[k] / 2 / POSE_SIZE[0] * w, top + ys[k] / 2 / POSE_SIZE[1] * h, float(scores[k]))
                   for k in range(len(KEYPOINTS))]
+        box = boxes[n]
         found.append({"points": [(round(float(x) / width, 4), round(float(y) / height, 4), round(score, 2))
                                  for x, y, score in pixels],
-                      **body_flags(pixels)})
+                      **body_flags(pixels, (box[0] * width, box[1] * height, box[2] * width, box[3] * height),
+                                   (width, height))})
     return found
 
 
-def body_flags(points):
-    """hand_up, lying and sitting from 17 body points in pixels, each True, False or None."""
+def body_flags(points, box=None, size=None):
+    """hand_up, lying and sitting from 17 body points in pixels, each True, False or None. box is the
+    person's box and size the picture's, in pixels: a hand outside the person, or at the picture's edge,
+    is something else, such as a bottle on a shelf."""
     seen = [point if point[2] >= POINT_MIN else None for point in points]
 
     def middle(*names):
@@ -294,14 +299,39 @@ def body_flags(points):
     if torso > 0:
         # A body that lies down has its shoulders beside its hips, not above them.
         flags["lying"] = abs(hips[0] - shoulders[0]) > 1.5 * abs(hips[1] - shoulders[1])
-    if shoulders and (torso > 0 or nose) and any(wrists):
-        # A raised hand is well above the shoulders, as when someone calls a waiter or waves.
-        above = shoulders[1] - (0.3 * torso if torso > 0 else abs(shoulders[1] - nose[1]))
-        flags["hand_up"] = any(wrist and wrist[1] < above for wrist in wrists)
+    head = [seen[KEYPOINTS.index(name)] for name in ("nose", "left eye", "right eye", "left ear", "right ear")]
+    head = min((point[1] for point in head if point), default=None)
+    if shoulders and (head is not None or torso > 0):
+        # A raised hand is above the eyes, or beside the head above the chin, as when someone calls a waiter
+        # or waves. A hand that holds a cup or a bottle to the mouth is in front of the face, not beside it.
+        # Without the head, it must be well above the shoulders.
+        width = abs(seen[5][0] - seen[6][0]) if seen[5] and seen[6] else 0.0
+        face_x = nose[0] if nose else shoulders[0]
+        clear = [wrist for wrist in wrists if wrist and wrist[2] >= HAND_MIN and _on_person(wrist, box, size)]
+        if head is not None:
+            chin = (head + shoulders[1]) / 2
+            flags["hand_up"] = any(wrist[1] < head or (wrist[1] < chin and abs(wrist[0] - face_x) > 0.6 * width)
+                                   for wrist in clear)
+        else:
+            flags["hand_up"] = any(wrist[1] < shoulders[1] - 0.6 * torso for wrist in clear)
     if torso > 0 and knees and not flags["lying"]:
         # A thigh hangs down about one torso long in a person who stands, and lies almost flat in one who sits.
         flags["sitting"] = (knees[1] - hips[1]) < 0.55 * torso
     return {name: None if value is None else bool(value) for name, value in flags.items()}
+
+
+def _on_person(point, box, size):
+    """True if a point is in the person's box, with a little room, and not at the picture's edge."""
+    if box is not None:
+        x1, y1, x2, y2 = box
+        room = 0.1 * max(x2 - x1, y2 - y1)
+        if not (x1 - room <= point[0] <= x2 + room and y1 - room <= point[1] <= y2 + room):
+            return False
+    if size is not None:
+        edge = 0.015 * max(size)
+        if not (edge <= point[0] <= size[0] - edge and edge <= point[1] <= size[1] - edge):
+            return False
+    return True
 
 
 def download(name=MODEL):

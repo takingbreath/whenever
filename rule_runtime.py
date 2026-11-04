@@ -234,7 +234,8 @@ class Found:
     2.5 or more, and one who sits is about 2 or less, seen from a camera on a wall. place is the name of
     its place, when ctx.detect got places. pose, when ctx.detect got pose=True, is a dict with points
     (17 body points) and hand_up, lying and sitting, each True, False or None when the body hides it.
-    direction is "in" or "out" for a Found that ctx.crossings returns."""
+    direction is "in" or "out" for a Found that ctx.crossings returns. who, after ctx.who, is the tagged
+    person it is, as a dict with id, name, score and by ("face", "look" or "track"), or None."""
 
     def __init__(self, frame=None, camera="", label="", confidence=0.0, box=(0.0, 0.0, 0.0, 0.0), id=None, place=None,
                  stayed=0.0, tall=0.0, pose=None):
@@ -249,6 +250,7 @@ class Found:
         self.tall = tall
         self.pose = pose
         self.direction = None
+        self.who = None
 
     def __repr__(self):
         return f"Found({self.label} {self.id} in {self.place or self.camera}, confidence={self.confidence})"
@@ -341,7 +343,8 @@ class Context:
     journal rows that history returns.
     ctx.asked lists each (question, model), and ctx.armed holds each armed sensor with its seconds.
     Set ctx.detected to the Found items that detect returns, and ctx.place_list to the Places that places
-    returns.
+    returns. Set ctx.matches to the who dicts (or None) that who gives, one for each person, in order, and
+    ctx.people_list to what people returns. ctx.tagged lists each (name, Found) that tag got.
     ctx.pointed is what the person pointed at, from pointed.json, or None. A test can set it.
     """
 
@@ -360,9 +363,13 @@ class Context:
         self.armed = {}
         self.detected = []
         self.place_list = []
+        self.matches = []
+        self.people_list = []
+        self.tagged = []
         self.tracker = Tracker()
         self._steady = {}
         self._lines = {}
+        self._named = {}   # (camera, id): the face match that named a tracked person
         self._call = call
         try:
             self.pointed = json.loads((Path(self.folder) / "pointed.json").read_text())
@@ -533,6 +540,47 @@ class Context:
                     "seconds": now["seen"] - now["start"]}
         return None
 
+    def who(self, found, look=True):
+        """Says which tagged person each person in found is, and sets .who on each, from a face across days
+        and weeks, or from a look (clothes and build) within a day. A person who keeps their id after a face
+        match keeps the name, by "track", even when they turn away. Free: about 0.03 s for a face and 0.5 s
+        for a look, so pass look=False in a loop that runs every second. Returns the people that it named."""
+        people = [f for f in found if f.label == "person"][:20]
+        if not self._call:
+            answers = [self.matches.pop(0) if self.matches else None for _ in people]
+        else:
+            answers = self._call("who", items=[{"frame": f.frame.name if f.frame else None, "camera": f.camera,
+                                                "box": list(f.box)} for f in people], look=bool(look),
+                                 check=self._check())
+        named = []
+        for person, answer in zip(people, answers):
+            match = {k: answer[k] for k in ("id", "name", "score", "by")} if answer and answer.get("name") else None
+            key = (person.camera, person.id)
+            if match and match["by"] == "face" and person.id is not None:
+                self._named[key] = match
+            elif match is None and person.id is not None and key in self._named:
+                match = dict(self._named[key], by="track")
+            person.who = match
+            if match:
+                named.append(person)
+        return named
+
+    def tag(self, found, name, note=""):
+        """Tags a person, such as everyone who works behind the counter, so that ctx.who knows them later.
+        A second tag with the same name adds one more picture of that person. Returns the person as a dict."""
+        if not self._call:
+            self.tagged.append((str(name), found))
+            return {"id": "test", "name": str(name)}
+        return self._call("tag", frame=found.frame.name if found.frame else None, camera=found.camera,
+                          box=list(found.box), name=str(name)[:60], note=str(note)[:300], check=self._check())
+
+    def people(self):
+        """The tagged people, as dicts with id, name, note, times_seen and seen (the last sighting: t,
+        camera and by)."""
+        if not self._call:
+            return [dict(p) for p in self.people_list]
+        return self._call("people")
+
     def places(self, thing, camera=None):
         """Every such thing in the cameras that stay still, such as "table", each as a Place with a name
         such as "table 3", numbered by rows from the top left. SAM finds them once in each camera, which
@@ -655,14 +703,15 @@ class Context:
             return [dict(item) for item in self.past]
         return self._call("history", kind=kind, name=name, rule_name=rule, since=since, until=until, limit=int(limit))
 
-    def notify(self, text, picture=None, at=None):
+    def notify(self, text, picture=None, at=None, to=None):
         """Shows an alert, and sends it to the person's phone if they have a phone action.
 
         An alert about an event shows that event's cameras and clip. From on_tick, pass at, the time
-        of the event it is about. A later alert of the same event with no new picture stays on the page."""
+        of the event it is about. A later alert of the same event with no new picture stays on the page.
+        to sends it only to the alert places with that name, such as "Waiter" or "Manager"."""
         path = picture.path if isinstance(picture, Frame) else (str(picture) if picture else None)
         self._record("notify", text=str(text)[:300], picture=path, check=self._check(),
-                     at=float(at) if at is not None else None)
+                     at=float(at) if at is not None else None, to=str(to)[:40] if to else None)
 
     def say(self, text):
         self._record("say", text=str(text)[:300])

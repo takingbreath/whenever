@@ -167,8 +167,9 @@ Write rule.py with any of these functions:
 t is Unix time in seconds. The sensors are already cleaned, so one odd frame does not reach you.
 
 ctx.state is a dict that is saved between calls, and across server restarts. Keep JSON values in it.
-ctx.notify(text, picture=None, at=None) shows a notification. It also reaches the person's phone when
-they have a phone action, with the picture if you pass a Frame. It shows the cameras and the clip of
+ctx.notify(text, picture=None, at=None, to=None) shows a notification. It also reaches the person's phone
+when they have a phone action, with the picture if you pass a Frame. to sends it only to the alert places
+with that name, such as to="Waiter" or to="Manager", as the person named them under Actions. It shows the cameras and the clip of
 its event. In on_tick there is no event, so pass at, the time of the event that the alert is about,
 such as a time you kept in ctx.state. One event is one message on the phone: a later alert of the same
 event answers the first one when you pass a new picture, and stays on the page when you do not. So send
@@ -216,8 +217,8 @@ the person asks for a picture of someone or something, use this, because one sha
 the wrong one and a security camera may never give a truly clear view. Use a plain noun in thing.
 Pass frames that cover the whole job, such as ctx.frames(before=seconds_since_the_event, count=24). If
 ctx.check never passes, still show a gallery when the deadline ends, with a caption such as "Best
-pictures found, none fully clear". Never call a picture clear without a passed Check, and never
-imply that a zoomed picture proves who someone is.
+pictures found, none fully clear". Never call a picture clear without a passed Check. A zoomed
+picture alone does not prove who someone is: use ctx.who for that.
 
 ctx.find(thing, frame=None) makes SAM find a short noun phrase in one frame, such as "person" or
 "bag". It returns a list of dicts with x1, y1, x2, y2, w, h and confidence, the most certain first.
@@ -243,12 +244,26 @@ box), or the nearest place less than near times that place's size away, so a per
 a table counts at that table. region, a box from 0 to 1, looks only there with more pixels, for small
 things far away. Call ctx.detect in time order with frames a few seconds apart or less, so that .id
 and .stayed can follow each thing. pose=True also gives each person .pose, a dict with points (17
-body points from 0 to 1) and hand_up (a hand well above the shoulders, as someone who calls a waiter),
+body points from 0 to 1) and hand_up (a hand raised to the head or above, as someone who calls a waiter
+or waves, but also someone who answers a phone or reaches up, so confirm the meaning with a close-up check),
 lying (the body is flat, as someone who fell) and sitting, each True, False, or None when the body is
 hidden, such as knees under a table. It is free too, about 15 ms a person. It can miss a thing that is
-mostly hidden, and it cannot say what a person does or who they are. At night, under infrared light,
-it can take a chair or a plant for a person, so ask for a higher min_confidence or for movement. For
-any other kind of thing, use ctx.find. Never try to tell who a person is.
+mostly hidden, and it cannot say what a person does. At night, under infrared light, it can take a chair
+or a plant for a person, so ask for a higher min_confidence or for movement. For any other kind of
+thing, use ctx.find.
+
+PEOPLE THAT THE OPERATOR TAGGED. The person can tag anyone from a picture with a name or a label, such
+as "Ravi", "Regular 3", "Waiter Asha" or "Banned 1". ctx.who(found, look=True) says for each person in
+found (from ctx.detect) which tagged person it is, and sets .who: a dict with id, name, score and by, or
+None. by is "face" (a face match, good across days and weeks), "look" (clothes and build, only within a
+day, a hint that people in similar clothes can share) or "track" (the same tracked id as an earlier face
+match, such as when the person turns away). It needs a face at least about 20 pixels across, so a camera
+at head height near a door names more people than a high camera over a gate. It is free: about 0.03 s
+a face, and 0.5 s for a look, so pass look=False in a loop. Each sure face match teaches Whenever the
+person better. ctx.tag(found, name) tags a person from your rule, such as each person who works behind
+the counter for an hour, and a second tag with the same name adds one more picture. ctx.people() lists
+the tagged people with how often and where each was last seen. Use names exactly as the person tagged
+them. For a person who is not tagged yet, tell the person to open a picture of them and tag them.
 
 ctx.places(thing, camera=None) returns every such thing in the cameras that stay still, such as
 "table", "door", "desk" or "parking space", each a Place with .name ("table 1", "table 2", numbered by
@@ -331,8 +346,17 @@ What people who run a place ask, and the blocks for each:
 - Footfall, entries and exits by hour, group size (people who cross within a few seconds): ctx.crossings.
 - A queue that grows, or people who wait too long at a door or a counter: a zone from beside, a steady
   count, and .stayed of each person in it.
-- Guests who call for staff: pose=True and hand_up on a steady id, then a close-up check. A person who
-  falls: lying, then a close-up check, then an alert at once.
+- Guests who call for staff: pose=True and hand_up on the same id in 2 looks a few seconds apart, then
+  a close-up check, then ctx.notify(..., to="Waiter"). Keep the time in ctx.state. If no staff member
+  comes to that table within a few minutes (a tagged waiter, or a standing person, tall 2.3 or more or
+  sitting False, at the table for 2 s or more, who is not one of its guests: people who walk past do not
+  stay), alert again with to="Manager".
+- A person who falls: lying, then a close-up check, then an alert at once.
+- A tagged person arrives or comes back, such as a regular guest, a supplier or a person who is banned:
+  ctx.who on the people at the door, and an alert at once with their name and the frame where ctx.who
+  matched them by face. That frame shows them, so do not wait for a clearer one. Use ctx.visit, so one
+  visit is one alert. Staff who are tagged can
+  be left out of guest counts, and their time on the floor can be measured.
 - Something left behind: a handbag, backpack, laptop or cell phone at a place where no person is.
 - Cars and riders outside: car, motorcycle and person at places, with ctx.visit for how long they stay.
 - What staff do, hygiene, spills, smoke, an open drawer or door: these need meaning, so use a sensor or
@@ -684,11 +708,14 @@ def review_rule(client, sentence, sensors, code):
             "passed ctx.check on that exact frame. A ctx.ask over several frames confirms nothing about "
             "one frame, and a sensor firing does not confirm it either. A claim for a clear picture of a "
             "person must ask for the person in view, nothing cut off, and not badly blurred. It asks for eyes or a "
-            "face only for a camera close to people, such as a desk or a door camera.\n"
+            "face only for a camera close to people, such as a desk or a door camera. A Found whose .who came "
+            "by face is proof of who is in its own frame and box, as a passed check is, so its frame can "
+            "show that person at once. A match by look or by track is only a hint.\n"
             "10. NO PICTURES: the person asked for a picture of someone or something, but the code does "
             "not call ctx.gallery, or it shows nothing when the wait ends with no passed check.\n"
             "7. WRONG SUBJECT: the person asked about one person or thing, but a check can pass on another "
-            "one in view. The claim must say which one, with reference if needed.\n"
+            "one in view. The claim must say which one, with reference if needed, or pass place= that "
+            "Found, or use a Found that ctx.who named by face.\n"
             "8. NARROWED MEANING: a sensor leaves out a normal form of what the person named, so real "
             "events never fire. A smoker can use a cigarette, a cigar or a vape, and a drink can be in a "
             "bottle, a cup or a glass. Follow the person's word as widely as people normally use it.\n"

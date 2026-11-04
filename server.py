@@ -36,6 +36,7 @@ import ask
 import detect
 import embed
 import moments
+import people
 import sandbox
 import search
 import writer
@@ -113,6 +114,7 @@ MAX_CHECK_THREADS = 6
 MAX_RULE_FRAMES = 24
 MAX_DETECT_FRAMES = 24
 MAX_POSES = 20            # people in one camera picture that get body points
+MAX_WHO = 20              # person boxes that one ctx.who call reads
 MAX_BEFORE_S = 900
 MAX_AFTER_S = 30
 MAX_ARM_S = 900
@@ -901,7 +903,8 @@ class Rule:
             self.app.record(self, message["name"], message.get("values") or {}, message.get("check"))
         elif kind == "notify":
             actions.run({"action": kind, "text": message["text"]})
-            self.app.notify(self, message["text"], message.get("picture"), message.get("check"), message.get("at"))
+            self.app.notify(self, message["text"], message.get("picture"), message.get("check"), message.get("at"),
+                            message.get("to"))
         elif kind == "say":
             actions.run({"action": kind, "text": message["text"]})
             self.app.add_feed(self, kind, message["text"], url=self.app.picture_url(self, message.get("picture")))
@@ -986,6 +989,8 @@ class App:
         self.oldest_cache = (0.0, None)
         # The moment index: free PE-Core embeddings of each camera, for Ask's ranking. It starts in main().
         self.embedder = embed.Embedder()
+        # The people that the operator tagged. A test without a phone file keeps them in its own folder.
+        self.people = people.People(DATA_DIR / "people" if phone_file else Path(logs_dir) / "people", self.embedder)
         self.moments = moments.Moments(DATA_DIR / "moments.db" if phone_file else Path(logs_dir) / "moments.db",
                                        self.embedder, self._moment_picture, lambda: self.wall, self._moment_busy)
         self.voices = {}
@@ -2239,11 +2244,13 @@ class App:
                   "arm": self._rule_arm, "disarm": self._rule_disarm,
                   "aim": self._rule_aim, "move": self._rule_move, "light": self._rule_light,
                   "act": self._rule_act, "history": self._rule_history,
-                  "detect": self._rule_detect, "places": self._rule_places}
+                  "detect": self._rule_detect, "places": self._rule_places,
+                  "who": self._rule_who, "tag": self._rule_tag, "people": self._rule_people}
         try:
             # An action, the journal and the local detector call no model, so a report still works at the
             # spend limit. Places found before still come back, and new ones wait.
-            if self.stopped() and message.get("name") not in ("act", "history", "disarm", "detect", "places"):
+            if self.stopped() and message.get("name") not in ("act", "history", "disarm", "detect", "places", "who",
+                                                              "tag", "people"):
                 raise ValueError("The spend limit stopped this call.")
             if rule.paused:
                 raise ValueError("This rule is stopped.")
@@ -2320,14 +2327,15 @@ class App:
         except ValueError as e:
             self.trouble(rule, f"{rule.name} could not keep a record", str(e), source="Journal", level="warn")
 
-    def notify(self, rule, text, picture=None, check=None, at=None):
+    def notify(self, rule, text, picture=None, check=None, at=None, to=None):
         """ctx.notify: the page and every paired place get the cameras where it happened, and a clip.
-        Cutting the cameras and making the clip take a moment, so this runs beside the rule."""
-        self._later(self._notify, rule, text, picture, check, at)
+        Cutting the cameras and making the clip take a moment, so this runs beside the rule. to names the
+        places to send it to, such as "Waiter"."""
+        self._later(self._notify, rule, text, picture, check, at, to)
 
-    def _notify(self, rule, text, picture, check=None, at=None):
+    def _notify(self, rule, text, picture, check=None, at=None, to=None):
         occurrence = self.occurrence_of(rule, check, at) or (self.occurrence_near(rule, picture) if picture else None)
-        if self.repeated(occurrence, text):
+        if self.repeated(occurrence, f"{to or ''}:{text}"):
             return
         try:
             media = self.alert_media(rule, picture, occurrence, clip=False)
@@ -2340,7 +2348,7 @@ class App:
             self.add_feed(rule, "alert", text, url=media["url"], cameras=media["cameras"], occurrence=occurrence)
         places, how = [], "here"
         try:
-            places, how = self._deliver(rule, occurrence, text, self._alert_title(rule, media), media, news)
+            places, how = self._deliver(rule, occurrence, text, self._alert_title(rule, media), media, news, to)
         except (ValueError, OSError) as e:
             self.trouble(rule, f"{rule.name} could not send an alert", str(e)[:300], source="Alerts", level="warn")
         if how == "here" and "clip_url" not in media and not (occurrence and occurrence in self.threads):
@@ -2528,12 +2536,25 @@ class App:
             media["clip"], media["clip_url"] = clip
         return media
 
-    def _deliver(self, rule, occurrence, text, title, media, news=True):
+    def _deliver(self, rule, occurrence, text, title, media, news=True, to=None):
         """Sends one alert to the person's places, and returns (places, how): "sent", "reply" or "here".
 
         One occurrence is one message. Its first alert goes out at once with its picture, and its clip
         follows in the same message. A later alert of the same occurrence answers that message, if it
-        has something new to see (news), such as the person's picture. Without news it stays on the page."""
+        has something new to see (news), such as the person's picture. Without news it stays on the page.
+        An alert to named places (to), such as the waiter and then the manager, is its own message."""
+        if to and self.channels.paired():
+            only = self.channels.named(to)
+            if not only:
+                self.problems.add(f"to:{rule.id}:{to}", f"No alert place is named {to}", "warn", "Alerts",
+                                  f"{rule.name} sent an alert to {to}, so it went to every place.",
+                                  "Under Actions, Where alerts go, give a place that name.", rule)
+            media["sent_at"] = time.time()
+            places = self.send_alert(rule, text, title, media["picture"], only=only or None, skip=("email",))
+            self.alert_clip(rule, media)
+            self.channels.add_clip({p["id"]: p.get("ref") for p in places if p["ok"]}, media.get("clip"),
+                                   title or rule.name, text, self.click_url(), media["picture"])
+            return places, "sent"
         thread = self.threads.get(occurrence) if occurrence else None
         if not self.channels.paired() or (thread is not None and not news):
             return [], "here"
@@ -2823,6 +2844,91 @@ class App:
             cache[f"|{word}"] = {"boxes": boxes, "t": time.time()}
         self._save_places(rule, cache)
         return boxes
+
+    def _person_picture(self, frame, camera):
+        """One camera's own picture of a saved frame, as OpenCV wants it, or None."""
+        if camera and camera not in self.cameras:
+            raise ValueError(f"There is no camera named {str(camera)[:40]}.")
+        source = self._camera_source(frame, self.cameras.index(camera)) if camera else self._sharp_wall(frame)
+        return people.picture_array(source) if source is not None else None
+
+    def _rule_who(self, rule, items=(), look=True, check=None):
+        """Which tagged person each person box is: by face across days and weeks, and by look within a day.
+        It runs on this server and costs nothing. Each sure sighting teaches Whenever the person better."""
+        if not people.available():
+            raise ValueError("The face models are not installed on this server.")
+        answers, pictures = [], {}
+        for item in list(items)[:MAX_WHO]:
+            key = (item.get("frame"), item.get("camera") or "")
+            if key not in pictures:
+                pictures[key] = self._person_picture(*key)
+            picture = pictures[key]
+            if picture is None:
+                answers.append(None)
+                continue
+            box = tuple(number(v, 0, 1, 0) for v in (list(item.get("box") or []) + [0, 0, 1, 1])[:4])
+            found = self.people.read(picture, box, look=bool(look))
+            match = self.people.match(found)
+            if match:
+                self.people.saw(match, found, key[1], where=key[0])
+            answers.append({**(match or {}), "face": found["face"] is not None, "face_size": round(found["face_size"])})
+        named = [a["name"] for a in answers if a and a.get("name")]
+        if check:
+            self._step(rule, check, {"model": "local", "question": "who", "answer": ", ".join(named) or "nobody tagged"},
+                       f"Faces and looks: {', '.join(named) or 'nobody tagged'}, at no cost")
+        return answers
+
+    def _rule_tag(self, rule, frame=None, camera=None, box=None, name="", note="", check=None):
+        """Tags a person from a frame, for a rule, such as everyone who works behind the counter."""
+        if not people.available():
+            raise ValueError("The face models are not installed on this server.")
+        picture = self._person_picture(frame, camera or "")
+        if picture is None:
+            raise ValueError("That frame is not available.")
+        box = tuple(number(v, 0, 1, 0) for v in (list(box or []) + [0, 0, 1, 1])[:4]) if box else None
+        person = self.people.tag(name, picture, box, note, by=f"rule {rule.name}")
+        self.add_feed(rule, "log", f"Tagged {person['name']}")
+        return person
+
+    def _rule_people(self, rule, check=None):
+        return self.people.public()
+
+    def tag_from_page(self, url, name, note="", box=None):
+        """Tags the person in a picture that the page shows, such as a gallery picture of a visitor. With no
+        box, it is the largest person in the picture."""
+        if not people.available():
+            raise ValueError("The face models are not installed on this server.")
+        data = self.page_picture(url)
+        if not data:
+            raise ValueError("That picture is no longer here.")
+        picture = people.picture_array(data)
+        if box is None and detect.available():
+            found = detect.detect(data, ["person"], 0.3)
+            if found:
+                box = max(found, key=lambda f: (f["box"][2] - f["box"][0]) * (f["box"][3] - f["box"][1]))["box"]
+        return self.people.tag(name, picture, box, note, by="person")
+
+    def page_picture(self, url):
+        """The bytes of a picture by the address that the page shows it at, or None."""
+        path, _, query = str(url or "").partition("?")
+        path = unquote(path)
+        if path.startswith("/rule-file/"):
+            parts = path.split("/", 3)
+            folder = sandbox.RULES_DIR / parts[2] if len(parts) == 4 and parts[2].isalnum() else None
+            file = rule_picture(folder, parts[3]) if folder else None
+            return file.read_bytes() if file else None
+        if path.startswith("/evidence/"):
+            parts = path.split("/")
+            if len(parts) != 4:
+                return None
+            params = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
+            camera = params.get("camera", "")
+            file = None
+            if parts[2] == self.evidence.session and camera.isdigit():
+                file = self.evidence.full_path(parts[3], int(camera))
+            file = file or self.evidence.sharp_path(parts[3], parts[2])
+            return file.read_bytes() if file else None
+        return None
 
     def _rule_find(self, rule, thing, frame=None, check=None):
         rule.allow_call()
@@ -4055,6 +4161,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"rows": rows})
         if path == "/api/problems":
             return self._json(200, self.app.problems.public())
+        if path == "/api/people":
+            return self._json(200, {"people": self.app.people.public(), "ready": people.available(),
+                                    "model": people.FACE_MODEL})
+        if path.startswith("/people-file/"):
+            parts = unquote(path).split("/")
+            folder = self.app.people.folder / parts[2] if len(parts) == 4 and parts[2].isalnum() else None
+            file = rule_picture(folder, parts[3]) if folder and folder.is_dir() else None
+            if file:
+                return self._send(200, file.read_bytes(), IMAGE_TYPES[file.suffix.lower()])
+            return self._json(404, {"error": "Not found."})
         if path.startswith("/api/job/"):
             job = self.app.jobs.get(path.rsplit("/", 1)[1])
             return self._json(200 if job else 404, job or {"error": "Not found."})
@@ -4164,6 +4280,21 @@ class Handler(BaseHTTPRequestHandler):
                 self.app.claim(str(claim.get("page"))[:40], names, list(claim.get("controls") or []), wall, streams)
                 self.app.camera_kinds.set_makes(dict(zip(names, makes)))
                 return self._json(200, {"active": True})
+            if self.path == "/api/people":
+                body = json.loads(self._read(MAX_JSON_BYTES) or b"{}")
+                try:
+                    person = self.app.tag_from_page(body.get("picture"), body.get("name"), body.get("note") or "",
+                                                    body.get("box"))
+                except ValueError as e:
+                    return self._json(400, {"error": str(e)})
+                return self._json(200, {"person": person})
+            if self.path.startswith("/api/people/"):
+                body = json.loads(self._read(MAX_JSON_BYTES) or b"{}")
+                try:
+                    person = self.app.people.rename(self.path.split("/")[3], body.get("name"), body.get("note"))
+                except ValueError as e:
+                    return self._json(400, {"error": str(e)})
+                return self._json(200, {"person": {k: person[k] for k in ("id", "name", "note")}})
             if self.path == "/api/camera":
                 return self._json(200, self.app.camera_command(json.loads(self._read(MAX_LABEL_BYTES))))
             if self.path == "/api/rule" or (self.path.startswith("/api/rule/") and self.path.endswith("/edit")):
@@ -4286,6 +4417,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.app.send_alert(None, "This browser is paired. Whenever alerts will look like this.", "Whenever",
                                     only=place["id"])
                 return self._json(200, {"place": {k: place[k] for k in ("id", "label", "t")}})
+            if self.path.startswith("/api/places/") and self.path.endswith("/name"):
+                body = json.loads(self._read(MAX_LABEL_BYTES) or b"{}")
+                try:
+                    place = self.app.channels.rename(unquote(self.path.split("/")[3]), body.get("name"))
+                except ChannelError as e:
+                    return self._json(400, {"error": str(e)})
+                return self._json(200, {"place": place})
             if self.path.startswith("/api/places/") and self.path.endswith("/test"):
                 self._read(MAX_LABEL_BYTES)
                 place = unquote(self.path.split("/")[3])
@@ -4338,6 +4476,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(403, {"error": "Forbidden."})
         if self.path.startswith("/api/rule/"):
             removed = self.app.remove_rule(self.path.rsplit("/", 1)[1])
+            return self._json(200 if removed else 404, {"removed": removed})
+        if self.path.startswith("/api/people/"):
+            removed = self.app.people.remove(self.path.rsplit("/", 1)[1])
             return self._json(200 if removed else 404, {"removed": removed})
         if self.path.startswith("/api/action/"):
             removed = self.app.connectors.remove(unquote(self.path.rsplit("/", 1)[1]))

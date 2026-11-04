@@ -64,13 +64,24 @@ The people who run a restaurant, or watch its cameras, ask the same kinds of que
 
 At closing time a rule reads `ctx.history`, does the arithmetic in Python, draws a chart and sends it: guests per hour, the peak, the average stay, the turnover of each table, the longest waits, footfall and how many passers-by came in, and when the host stand had nobody. `Ask` answers one-off questions about the last hours, such as "when did the supplier come?".
 
-## Telling who someone is
+## Knowing people again
 
-Some operators want to know when a person they banned comes back, or when a regular guest arrives. Whenever does not do this now, and its rules tell Wonder never to try.
+An operator can tag any person from a picture, with a name or a label, such as "Ravi", "Regular 3", "Waiter Asha" or "Banned 1". Whenever then knows them again, and rules can follow them by name.
 
-- **The Meta models.** SAM finds faces and outlines them. It does not say whose face it is. We did not test whether Spark would name a person, and its makers' policies limit that kind of use.
-- **Open-source tools.** Face matching exists with free licences. OpenCV's YuNet finds faces (MIT licence), and OpenCV's SFace turns a face into numbers to compare (its folder carries an Apache-2.0 licence). OpenCV does not say what SFace was trained on. InsightFace's code is MIT, but its trained models are for non-commercial research only, so they do not fit.
-- **The law.** In India, the Digital Personal Data Protection Act 2023 treats a face as personal data. Commentators say that a business needs clear consent for face matching, and that consent for security cameras does not cover it. Other places are stricter: Illinois needs written consent, and Portland bans face recognition in shops and restaurants. A lawyer must check each country before anyone uses it.
-- **Accuracy.** Ceiling cameras see faces small, from above, and at night in infrared. A false match makes staff confront the wrong guest, which hurts a real person and the business.
+| Question | How Whenever answers | Cost |
+|---|---|---|
+| A regular guest, a supplier or a person who is banned comes in | `ctx.who` on the people at the door, then an alert with the name and picture | Free |
+| When did this person last come? How often this month? | `ctx.people()` and each sighting that `ctx.who` keeps | Free |
+| Leave staff out of guest counts, and measure their time on the floor | Tag each waiter once, then `ctx.who` on the people at each place | Free |
+| A guest raises a hand: alert the waiter, then the manager if nobody comes | `pose=True` and `hand_up`, one close-up check, `ctx.notify(to="Waiter")`, then `to="Manager"` | Free, then paid once |
 
-If we build it later, it must be off by default, use only photos that the owner adds of people the owner banned, show a sign at the door, ask a person to confirm every match before anything happens, and delete what it does not need.
+**How it knows a person.** By face across days and weeks, and by look (clothes and build) within a day.
+
+- **Faces.** YuNet (OpenCV Zoo, MIT) finds the face. ArcFace R50 (InsightFace) compares it. We tagged 3 people with 3 pictures each, from one day, in the webcam sessions of 30 October to 2 November. On other days, it named them right 97.9% of the time, never gave a wrong name, and gave no name to 97 faces of people who were not tagged. Shrunk to 24 pixels across, faces still matched 96% of the time at 1 false match in 1,000.
+- **ArcFace's weights are for non-commercial use.** `WHENEVER_FACE_MODEL=sface` uses OpenCV's SFace (Apache-2.0) instead. On the same test it named people right 90.3% of the time, with no wrong names.
+- **Looks.** Meta's PE-Core compares the person's whole box. On our gate camera it found the same person as the nearest picture in 38 of 39 pictures, between night and day. But other people in similar clothes came close, so a look counts only within 12 hours of a sighting, and only as a hint.
+- **A person who turns away keeps the name** while the tracker follows them, after one face match.
+
+**Where it does not work.** It needs a face at least about 20 pixels across. Our gate camera hangs high and sees people from above or from behind: 12 to 27 pixels, and mostly no face at all. A camera at head height near a door sees most faces.
+
+**The law.** In India, the Digital Personal Data Protection Act 2023 treats a face as personal data, and commentators say that face matching needs clear consent. Check the law of each country, put a sign at the door, and forget a person when they ask.

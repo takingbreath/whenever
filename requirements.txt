@@ -5,3 +5,5 @@ cryptography>=41
 # Ask ranks saved moments for free with Meta's Perception Encoder, run as ONNX on the CPU.
 onnxruntime
 numpy
+# Tagged people: YuNet finds faces and SFace or ArcFace compares them (people.py).
+opencv-python-headless

@@ -264,7 +264,8 @@ class Channels:
     # ----- What the page shows -----
 
     def all(self):
-        """Every paired place, with no key, endpoint or chat id."""
+        """Every paired place, with no key, endpoint or chat id. A name that the person gave, such as
+        "Waiter" or "Manager", replaces the label, so a rule can send an alert to one of them."""
         p = self.places
         items = [{"kind": "push", "id": s["id"], "label": s["label"], "t": s["t"]} for s in p["push"]]
         if p["telegram"]:
@@ -273,7 +274,30 @@ class Channels:
         items += [{"kind": "email", "id": e["id"], "label": e["address"], "t": e["t"]} for e in p["email"]]
         if p["ntfy"]:
             items.append({"kind": "ntfy", "id": "ntfy", "label": "ntfy app", "t": p["ntfy"]["t"]})
+        names = p.get("names") or {}
+        for item in items:
+            if names.get(item["id"]):
+                item["label"] = names[item["id"]]
         return items
+
+    def rename(self, place_id, name):
+        """Gives a paired place a name, such as "Waiter". An empty name gives back its own label."""
+        name = " ".join(str(name or "").split())[:40]
+        with self.lock:
+            if not any(item["id"] == place_id for item in self.all()):
+                raise ChannelError("That place is not paired.")
+            names = self.places.setdefault("names", {})
+            if name:
+                names[place_id] = name
+            else:
+                names.pop(place_id, None)
+            self._save()
+        return next(item for item in self.all() if item["id"] == place_id)
+
+    def named(self, words):
+        """The ids of the places whose name holds these words, such as "waiter" in "Waiter Ravi"."""
+        words = " ".join(str(words or "").split()).lower()
+        return [item["id"] for item in self.all() if words and words in item["label"].lower()]
 
     def paired(self):
         return bool(self.all())
@@ -652,7 +676,8 @@ class Channels:
         """
         text = " ".join(str(text or "Whenever").split())[:MAX_TEXT]
         title = " ".join(str(title or "Whenever").split())[:120]
-        places = [p for p in self.all() if only is None or p["id"] == only]
+        wanted = {only} if isinstance(only, str) else set(only) if only is not None else None
+        places = [p for p in self.all() if wanted is None or p["id"] in wanted]
         if only is not None and not places:
             raise ChannelError("That place is not paired.")
         places = [p for p in places if p["kind"] not in skip]

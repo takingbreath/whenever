@@ -258,6 +258,8 @@
           <h1>Actions</h1>
         </header>
         <div id="phone-card"></div>
+        <h2 class="section-title">People</h2>
+        <div id="people-card"></div>
         <h2 class="section-title">Connected</h2>
         <ul id="actions" class="action-list"></ul>
         <form id="action-form" class="connect">
@@ -307,6 +309,15 @@
       <img id="viewer-image" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="The full camera frame">
       <div id="viewer-box" class="viewer-box" hidden></div>
     </div>
+    <form id="tag-form" class="tag-form" autocomplete="off">
+      <label for="tag-name">Tag this person, so Whenever knows them again</label>
+      <div class="tag-row">
+        <input id="tag-name" list="people-names" maxlength="60" placeholder="A name or a label, such as Regular 1">
+        <button id="tag-send" type="submit" class="pill-button small">Tag</button>
+      </div>
+      <p id="tag-note" class="note" role="status"></p>
+    </form>
+    <datalist id="people-names"></datalist>
   </dialog>
 
   <dialog id="pair" class="sheet" aria-labelledby="pair-title">

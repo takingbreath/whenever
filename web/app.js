@@ -429,6 +429,11 @@ async function postJson(url, body) {
 function openFrame(url, box, title) {
   $("viewer-title").textContent = title;
   $("viewer-image").src = url;
+  // The tag form tags the person in this picture: the marked one, or else the largest.
+  $("viewer").dataset.url = url;
+  $("viewer").dataset.box = box && box.w ? JSON.stringify([box.x1 / box.w, box.y1 / box.h, box.x2 / box.w, box.y2 / box.h]) : "";
+  $("tag-note").textContent = "";
+  $("tag-name").value = "";
   const mark = $("viewer-box");
   mark.hidden = !box;
   if (box) {
@@ -438,6 +443,104 @@ function openFrame(url, box, title) {
     mark.style.height = `${((box.y2 - box.y1) / box.h) * 100}%`;
   }
   $("viewer").showModal();
+}
+
+$("tag-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = $("tag-name").value.trim();
+  if (!name) {
+    $("tag-note").textContent = "Write a name or a label first.";
+    return;
+  }
+  const viewer = $("viewer");
+  $("tag-send").disabled = true;
+  $("tag-note").textContent = "Reading the face…";
+  try {
+    const reply = await postJson("/api/people", {
+      picture: viewer.dataset.url, name, box: viewer.dataset.box ? JSON.parse(viewer.dataset.box) : null,
+    });
+    const person = reply.person;
+    $("tag-note").textContent = person.faces
+      ? `Tagged ${person.name}. Whenever will know them by face from now on.`
+      : `Tagged ${person.name} by look only, for today. A picture with a clear face lets Whenever know them on other days.`;
+    renderPeople();
+  } catch (error) {
+    $("tag-note").textContent = error.message;
+  } finally {
+    $("tag-send").disabled = false;
+  }
+});
+
+async function renderPeople() {
+  let data;
+  try {
+    data = await (await fetch("/api/people")).json();
+  } catch (error) {
+    return;
+  }
+  const people = data.people || [];
+  $("people-names").replaceChildren(...people.map((p) => Object.assign(document.createElement("option"), { value: p.name })));
+  const card = element("section", "card phone-card people-card");
+  card.dataset.hue = "peacock";
+  if (!data.ready) {
+    card.append(element("h2", null, "Know people again"),
+      element("p", null, "The face models are not installed on this server yet."));
+    $("people-card").replaceChildren(card);
+    return;
+  }
+  if (!people.length) {
+    card.append(element("h2", null, "Know people again"),
+      element("p", null, "Open any picture of a person, in Activity or in an alert, and tag them with a name or a label. Whenever then knows them by face on other days, and your Whenevers can follow them by name, such as “tell me when Ravi arrives”."));
+    $("people-card").replaceChildren(card);
+    return;
+  }
+  card.append(element("h2", null, "Tagged people"),
+    element("p", null, "Known by face across days and weeks, and by look within a day. Your Whenevers can name them."));
+  const list = element("ul", "places");
+  for (const person of people) {
+    const item = element("li", "place");
+    const badge = element("span", "badge person-face");
+    if (person.picture) {
+      const img = document.createElement("img");
+      img.src = `/people-file/${person.id}/${person.picture}`;
+      img.alt = person.name;
+      badge.append(img);
+    } else {
+      badge.append(icon("eye"));
+    }
+    const words = element("span", "place-words");
+    const seen = person.seen
+      ? `Seen ${person.times_seen} ${person.times_seen === 1 ? "time" : "times"}, last ${dayName(person.seen.t).replace(/^(Today|Yesterday)$/, (d) => d.toLowerCase())} at ${clock(person.seen.t)}${person.seen.camera ? ` on ${person.seen.camera}` : ""}`
+      : "Not seen since the tag";
+    words.append(element("b", null, person.name), element("small", null, [seen, person.faces ? "" : "no face yet"].filter(Boolean).join(" · ")));
+    const rename = button("Rename", "pill-button small ghost", async () => {
+      const name = prompt("A new name or label", person.name);
+      if (!name || name.trim() === person.name) return;
+      try {
+        await postJson(`/api/people/${person.id}`, { name });
+        renderPeople();
+      } catch (error) {
+        flash(error.message);
+      }
+    });
+    let armed = false;
+    const remove = button("Forget", "link-button", async () => {
+      if (!armed) {
+        armed = true;
+        remove.textContent = "Tap again to forget";
+        setTimeout(() => { armed = false; remove.textContent = "Forget"; }, 3500);
+        return;
+      }
+      await fetch(`/api/people/${person.id}`, { method: "DELETE" });
+      renderPeople();
+    });
+    const buttons = element("span", "place-buttons");
+    buttons.append(rename, remove);
+    item.append(badge, words, buttons);
+    list.append(item);
+  }
+  card.append(list);
+  $("people-card").replaceChildren(card);
 }
 
 function pictureTitle(picture) {
@@ -1217,7 +1320,10 @@ function route() {
     localStorage.setItem("whenever-seen", String(Date.now() / 1000));
     $("activity-dot").hidden = true;
   }
-  if (name === "actions") renderPhoneCard(true);
+  if (name === "actions") {
+    renderPhoneCard(true);
+    renderPeople();
+  }
   if (name === "cameras") renderCamerasScreen(true);
   if (name === "whenevers") renderList(true);
   if (name === "create") renderCreate();
@@ -3072,7 +3178,7 @@ function renderPhoneCard(force) {
     return;
   }
   card.append(element("h2", null, "Where alerts go"),
-    element("p", null, "Each alert from a Whenever goes to every place here, with its picture."));
+    element("p", null, "Each alert from a Whenever goes to every place here, with its picture. Name a place, such as Waiter or Manager, and a Whenever can alert only that person."));
   const list = element("ul", "places");
   for (const place of places) {
     const item = element("li", "place");
@@ -3103,8 +3209,19 @@ function renderPhoneCard(force) {
       await fetch(`/api/places/${encodeURIComponent(place.id)}`, { method: "DELETE" });
       refreshState();
     });
+    const name = button("Name", "link-button", async () => {
+      const words = prompt("Name this place, such as Waiter or Manager. A Whenever can send alerts to it by this name.", place.label);
+      if (words == null) return;
+      try {
+        await postJson(`/api/places/${encodeURIComponent(place.id)}/name`, { name: words });
+        renderPhoneCard(true);
+        refreshState();
+      } catch (error) {
+        flash(error.message);
+      }
+    });
     const buttons = element("span", "place-buttons");
-    buttons.append(test, remove);
+    buttons.append(test, name, remove);
     item.append(badge, words, buttons);
     list.append(item);
   }
