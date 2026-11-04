@@ -137,9 +137,9 @@ class Analyzer(unittest.TestCase):
         guest = (0.12, 0.42, 0.20, 0.62)   # sits at T2
         for t in range(10, 310, 10):
             self.look(t, [person(guest)])
-        # The guest leaves, and 20 s later someone new sits at the same table, inside the 30 s gap.
+        # The guest leaves, and 10 s later someone new sits at the same table, inside the 30 s gap.
         self.look(310, [])
-        for t in range(330, 345, 2):
+        for t in range(320, 335, 2):
             out = self.look(t, [person(guest)])
         t2 = out["cameras"]["Cafe"]["places"][1]
         self.assertLess(t2["since_s"], 30, "the new group's visit starts now, not at the first guest's")

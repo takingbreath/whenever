@@ -58,6 +58,7 @@ KEEP_TRACK_S = 180.0      # an ended track stays this long, for an alert's evide
 TRAIL = 20
 SEAT_GAP_S = 30.0         # a guest who stands up for less than this still sits there
 VISIT_GAP_S = 30.0        # a table with nobody for less than this keeps its visit, as ctx.visit does
+IN_VIEW_S = 3.0           # a person seen this recently is still in view
 WAIT_S = 600.0
 STAFF_STAY_S = 2.0
 STAYED_TO_SIT_S = 4.0     # a person who sits here for this long sits at the table, not walks past
@@ -798,7 +799,7 @@ class Analyzer:
                 ids = {tr.id for tr in guests}
                 # A new group at a table is a new visit, even within the gap, once nobody of the old group is
                 # still in view: on the demo's looping cafe, one visit had run for over an hour.
-                old_here = {tr.id for tr in cam.tracks.values() if t - tr.last <= SEAT_GAP_S} & table.visit_guests
+                old_here = {tr.id for tr in cam.tracks.values() if t - tr.last <= IN_VIEW_S} & table.visit_guests
                 new_group = table.visit_start is not None and not (table.visit_guests & ids) and not old_here
                 if new_group:
                     minutes = max(1, round((table.visit_seen - table.visit_start) / 60))
