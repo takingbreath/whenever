@@ -181,7 +181,7 @@ class Track:
         self.hand_streak, self.hand_down, self.hand_first, self.hand_since, self.hand_end = 0, 0, 0.0, None, 0.0
         self.faces = []                         # the clearest faces: {q, size, score, t, crop}
         self.face_t = -1e9
-        self.hits = {}                          # identity: [sure of each face match]
+        self.hits = {}                          # identity: [(t, sure) of each face match]
         self.who = None
         self.who_face_t = 0.0
         self.look, self.look_t, self.look_area = None, -1e9, 0.0
@@ -580,7 +580,7 @@ class Analyzer:
 
     def _named(self, cam, track, match, t, picture):
         """A face match on a track: the surest identity of its faces names the whole track."""
-        track.hits.setdefault(match["id"], []).append(match.get("sure") or 0.0)
+        track.hits.setdefault(match["id"], []).append((t, match.get("sure") or 0.0))
         best = max(track.hits, key=lambda key: people.combine(track.hits[key]))
         if best != match["id"]:
             return
@@ -1135,7 +1135,7 @@ class Analyzer:
         hits = track.hits.get(who["id"]) or []
         if track.faces and hits:
             face = max(track.faces, key=lambda f: f["q"])
-            looks = len(hits)
+            looks = len(people.separate_looks(hits))   # looks seconds apart count once, as in the estimate
             evidence.append({"kind": "face", "text": f"{looks} clear look{'s' if looks > 1 else ''}, {clock(face['t'])}, "
                                                      f"{round(face['size'])} px", "score": who.get("score")})
         if who.get("by") == "look":
