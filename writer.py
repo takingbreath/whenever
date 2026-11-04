@@ -170,7 +170,8 @@ ctx.state is a dict that is saved between calls, and across server restarts. Kee
 ctx.notify(text, picture=None, at=None, to=None) shows a notification. It also reaches the person's phone
 when they have a phone action, with the picture if you pass a Frame. to sends it only to the alert places
 with that name, such as to="Waiter" or to="Manager", as the person named them under Actions. It shows the cameras and the clip of
-its event. In on_tick there is no event, so pass at, the time of the event that the alert is about,
+its event. picture can also be a Found, such as the guest whose hand is up or the person ctx.who named:
+the alert then shows that Found's frame with that one person or thing outlined. In on_tick there is no event, so pass at, the time of the event that the alert is about,
 such as a time you kept in ctx.state. One event is one message on the phone: a later alert of the same
 event answers the first one when you pass a new picture, and stays on the page when you do not. So send
 a "nothing found" note without a picture, and it does not ring the phone again. ctx.say(text) speaks.
@@ -254,16 +255,30 @@ thing, use ctx.find.
 
 PEOPLE THAT THE OPERATOR TAGGED. The person can tag anyone from a picture with a name or a label, such
 as "Ravi", "Regular 3", "Waiter Asha" or "Banned 1". ctx.who(found, look=True) says for each person in
-found (from ctx.detect) which tagged person it is, and sets .who: a dict with id, name, score and by, or
-None. by is "face" (a face match, good across days and weeks), "look" (clothes and build, only within a
-day, a hint that people in similar clothes can share) or "track" (the same tracked id as an earlier face
-match, such as when the person turns away). It needs a face at least about 20 pixels across, so a camera
+found (from ctx.detect) which tagged person it is, and sets .who: a dict with id, name, role, score, by
+and sure, or None. by is "face" (a face match, good across days and weeks), "look" (clothes and build,
+only within a day, a hint that people in similar clothes can share) or "track" (the same tracked id as
+an earlier face match, such as when the person turns away). role is what the person set for them:
+"staff", "regular", "vip", "banned" or "". sure, from 0 to 0.99, is how likely the name is right; a look
+is less sure than a face. Choose the sure that you need by purpose: to greet a regular or a vip, or to
+leave staff out of guest counts, act from sure 0.7. For a person whose role is "banned", alert from sure
+0.7 too, but word it as a maybe, such as "Maybe Banned 1 at the door", always pass the picture (or the
+Found, see ctx.notify), and never act on your own, such as locking a door: a person decides. It needs a
+face at least about 20 pixels across, so a camera
 at head height near a door names more people than a high camera over a gate. It is free: about 0.03 s
 a face, and 0.5 s for a look, so pass look=False in a loop. Each sure face match teaches Whenever the
 person better. ctx.tag(found, name) tags a person from your rule, such as each person who works behind
 the counter for an hour, and a second tag with the same name adds one more picture. ctx.people() lists
 the tagged people with how often and where each was last seen. Use names exactly as the person tagged
 them. For a person who is not tagged yet, tell the person to open a picture of them and tag them.
+
+A face too small on a fixed lens, with a moving lens beside it (the request says which cameras can turn):
+when ctx.who names nobody because the face is small (a person far away, a box less than about 150
+pixels tall), aim the moving lens at the head with ctx.aim(moving_camera, x=..., y=...) at the middle of
+the box's top fifth, wait for the new view (the lens moves in about 1 s, and its video arrives a few
+seconds late, so take ctx.frames(after=8, count=4)), then ctx.detect("person", those frames,
+camera=moving_camera) and ctx.who on the moving view. Do this only while the person stays, at
+most once for each tracked id, and keep the time in ctx.state.
 
 ctx.places(thing, camera=None) returns every such thing in the cameras that stay still, such as
 "table", "door", "desk" or "parking space", each a Place with .name ("table 1", "table 2", numbered by

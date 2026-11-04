@@ -34,6 +34,9 @@ TEST_JPEG = base64.b64decode(
 )
 
 
+WHO_FIELDS = ("id", "person_id", "name", "role", "score", "sure", "by")
+
+
 class ModelError(Exception):
     """A model call failed, or a limit stopped it."""
 
@@ -543,8 +546,10 @@ class Context:
     def who(self, found, look=True):
         """Says which tagged person each person in found is, and sets .who on each, from a face across days
         and weeks, or from a look (clothes and build) within a day. A person who keeps their id after a face
-        match keeps the name, by "track", even when they turn away. Free: about 0.03 s for a face and 0.5 s
-        for a look, so pass look=False in a loop that runs every second. Returns the people that it named."""
+        match keeps the name, by "track", even when they turn away. .who has id (also person_id), name,
+        role ("staff", "regular", "vip", "banned" or ""), score, by and sure, from 0 to 0.99: how likely the
+        name is right. Free: about 0.03 s for a face and 0.5 s for a look, so pass look=False in a loop that
+        runs every second. Returns the people that it named."""
         people = [f for f in found if f.label == "person"][:20]
         if not self._call:
             answers = [self.matches.pop(0) if self.matches else None for _ in people]
@@ -554,7 +559,11 @@ class Context:
                                  check=self._check())
         named = []
         for person, answer in zip(people, answers):
-            match = {k: answer[k] for k in ("id", "name", "score", "by")} if answer and answer.get("name") else None
+            match = {k: answer.get(k) for k in WHO_FIELDS if k in answer or k in ("sure", "role")} \
+                if answer and answer.get("name") else None
+            if match is not None:
+                match.setdefault("person_id", match.get("id"))
+                match["role"] = match.get("role") or ""
             key = (person.camera, person.id)
             if match and match["by"] == "face" and person.id is not None:
                 self._named[key] = match
@@ -708,10 +717,15 @@ class Context:
 
         An alert about an event shows that event's cameras and clip. From on_tick, pass at, the time
         of the event it is about. A later alert of the same event with no new picture stays on the page.
-        to sends it only to the alert places with that name, such as "Waiter" or "Manager"."""
+        to sends it only to the alert places with that name, such as "Waiter" or "Manager". picture can be
+        a Found, such as the person who raised a hand: the alert shows its frame with that one outlined."""
+        subject = None
+        if isinstance(picture, Found):
+            subject = {"camera": picture.camera, "box": [round(v, 4) for v in picture.box]}
+            picture = picture.frame
         path = picture.path if isinstance(picture, Frame) else (str(picture) if picture else None)
         self._record("notify", text=str(text)[:300], picture=path, check=self._check(),
-                     at=float(at) if at is not None else None, to=str(to)[:40] if to else None)
+                     at=float(at) if at is not None else None, to=str(to)[:40] if to else None, subject=subject)
 
     def say(self, text):
         self._record("say", text=str(text)[:300])

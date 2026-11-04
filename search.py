@@ -525,6 +525,7 @@ class Search:
                 clip = self.clip(best["camera"], best["tile"], occ[0]["t"], occ[-1]["t"], frames)
                 if clip:
                     moment["clip"] = self.asks.url(self.job, self.asks.keep(self.job, "clip.mp4", clip))
+                    moment["clip_start"] = self.clip_start
             moments.append(moment)
         unseen = self.job.get("unseen", 0)
         facts = {"span": [hms(self.plan["since"]), hms(self.plan["until"])], "cameras": list(self.tiles),
@@ -550,8 +551,10 @@ class Search:
         start, end = start - CLIP_S[0], max(end, start) + CLIP_S[1]
         clip = recording_clip(self.app, camera, start, end)
         if clip:
+            self.clip_start = round(start, 2)   # the page draws boxes over the clip from this time
             return clip
         chosen = [f for f in frames if start <= f["t"] <= end][:120]
+        self.clip_start = round(chosen[0]["t"], 2) if chosen else None
         return frames_clip(self.footage, chosen, tile)
 
 
@@ -799,6 +802,7 @@ class Since:
         clip = self.s.clip(self.app.cameras[tile], tile, before["t"], after["t"], frames)
         if clip:
             moments[0]["clip"] = self.s.asks.url(self.job, self.s.asks.keep(self.job, "clip.mp4", clip))
+            moments[0]["clip_start"] = self.s.clip_start
         facts = {"thing": self.plan["thing"], "camera": self.app.cameras[tile], "arrived_between":
                  [hms(before["t"]), hms(after["t"])], "spark_confirms": confirmed,
                  "frames_compared": len(scores)}
