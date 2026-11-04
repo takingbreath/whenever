@@ -227,11 +227,11 @@ class Relay(unittest.TestCase):
         self.assertFalse(any(watch.add(300, False) for _ in range(camera.SECOND)))
 
     def test_a_camera_alarm_wakes_only_its_own_lens(self):
-        alarm = {"serial": "BD4947054", "channel": "2", "t": 1}
-        self.assertTrue(camera.alarm_matches("ezviz-rtp:BD4947054:2", alarm))
-        self.assertFalse(camera.alarm_matches("ezviz-rtp:BD4947054:1", alarm))
-        self.assertTrue(camera.alarm_matches("ezviz:BD4947054", alarm))
-        self.assertFalse(camera.alarm_matches("ezviz:K04937811", alarm))
+        alarm = {"serial": "BD1234567", "channel": "2", "t": 1}
+        self.assertTrue(camera.alarm_matches("ezviz-rtp:BD1234567:2", alarm))
+        self.assertFalse(camera.alarm_matches("ezviz-rtp:BD1234567:1", alarm))
+        self.assertTrue(camera.alarm_matches("ezviz:BD1234567", alarm))
+        self.assertFalse(camera.alarm_matches("ezviz:K12345678", alarm))
         self.assertFalse(camera.alarm_matches("rtsp://x/y", alarm))
 
     def test_only_new_and_recent_alarms_count(self):

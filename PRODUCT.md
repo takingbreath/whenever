@@ -27,8 +27,8 @@ The trigger is a camera and plain words, not a fixed list of events. Meta's Muse
 - Alerts reach every place that the person paired, with a picture: browser alerts (Web Push), Telegram, email (Amazon SES) or the ntfy app.
 - Problems stay quiet: a missed check is a note, and only trouble that needs the person makes a message. Activity > Problems keeps all of it.
 - A journal records every event, action and fact across all rules and restarts. Reports are scheduled rules that read it.
-- Hosted demo: https://wheneverwhatever.si (pending DNS) and https://whenever.140-245-12-216.sslip.io, behind an access code, with a $5 daily model budget.
-- Built for the Meta Global AI Developer Hackathon (startup track). The demo is a 3-minute video in the style of an Instagram Reel.
+- Hosted on a Linux server: https://wheneverwhatever.si runs the owner's real cameras, and https://demo.4-240-49-230.sslip.io is a demo with recorded cameras for judges and visitors. Each has its own access code and a daily model budget.
+- Built for Meta's (Facebook's) Global AI Developer Hackathon, startup track. The demo is a 3-minute video in the style of an Instagram Reel.
 
 ## Capabilities and Constraints
 
@@ -37,14 +37,14 @@ The trigger is a camera and plain words, not a fixed list of events. Meta's Muse
 - Building blocks: frames, ask, check, find, gallery, arm, draw, image, notify, act, record, history, aim, move, light.
 - Rule code runs in a sandbox with no key and no network. Keys stay in private files.
 - Writing a Whenever costs about $0.15 to $0.35 and takes 30 to 90 seconds. Model calls cost money, so spend stays visible.
-- Rules cannot hear yet. Questions about the past are not built yet.
+- Rules cannot hear yet. Ask answers questions about the past from the journal and the saved footage.
 - Stack: the existing codebase, plain HTML, CSS and JavaScript served by `server.py`, with no build step.
 
 ## Brand Commitments
 
 - Name: Whenever. Domain: wheneverwhatever.si.
 - Tagline: "Whenever it happens, do whatever you want."
-- The repo and the product name only the owner, Akhilesh Khajuria. No Claude or Anthropic credit.
+- The author is Akhilesh Khajuria.
 - Visual direction (chosen 2026-11-03): IFTTT-like, the category standard, but with Whenever's own twist, so it never reads as a copy of IFTTT.
 
 ## Evidence on Hand

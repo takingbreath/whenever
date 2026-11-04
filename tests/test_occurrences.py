@@ -56,7 +56,7 @@ class Base(unittest.TestCase):
         self.client = FakeClient(answer=False)
         self.app = server.App(self.client, self.logs, inline=True)
         self.app.controls = FakeControls()
-        self.app.controls.set_cameras([{"name": "Gate tracker", "serial": "BD4947054", "moves": True,
+        self.app.controls.set_cameras([{"name": "Gate tracker", "serial": "BD1234567", "moves": True,
                                         "light": False, "guide": "Gate wide"}])
         self.app.cameras = list(CAMERAS)
         self.app.wall = (3, 2)
@@ -92,7 +92,7 @@ class Focus(Base):
         self.assertEqual(left_out, [])
 
     def test_the_check_sees_the_focus_picture_and_keeps_it_for_the_why_view(self):
-        rule = self.rule()
+        self.rule()
         self.app.frame(wall_jpeg(), 1.0)
         asked = self.client.asked[-1][0]
         self.assertNotEqual(asked, wall_jpeg())
@@ -622,7 +622,7 @@ class Health(Base):
         for _ in range(server.VIEW_MISSES):
             self.app._check_view(rule, "Gate tracker")
         self.assertTrue(self.app.view_lost(rule, "Gate tracker"))
-        self.assertEqual(self.app.controls.commands[-1][:2], ("aim", "BD4947054"))
+        self.assertEqual(self.app.controls.commands[-1][:2], ("aim", "BD1234567"))
         status = self.app.rule_status(rule)
         self.assertEqual(status["level"], "warn")
         self.assertIn("Gate tracker does not show the gate", status["text"])

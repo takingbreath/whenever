@@ -13,6 +13,13 @@ camera.rtsp.env
 ezviz_open.env
 /data/
 actions.env
-.impeccable/review/
 /.media/
 models/
+access.env
+settings.env
+.impeccable/
+.claude/
+.venv/
+# The demo video's working files and notes stay on this Mac.
+video/
+docs/video-*.md
