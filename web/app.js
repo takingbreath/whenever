@@ -5654,8 +5654,10 @@ async function refreshState() {
   }
   const spent = state.spend_usd;
   const limit = state.spend_limit_usd;
-  $("spend-text").textContent = `$${spent.toFixed(2)} of $${limit} today`;
-  $("spend-fill").style.width = `${Math.min(100, (spent / limit) * 100)}%`;
+  // A limit of $0 is the owner's choice, so it reads as a setting, not as money that ran out.
+  $("spend-text").textContent = state.paid_off ? "Paid checks are off" : `$${spent.toFixed(2)} of $${limit} today`;
+  $("spend-fill").style.width = state.paid_off ? "0%" : `${Math.min(100, (spent / limit) * 100)}%`;
+  $("demo-paid-off").hidden = !(state.demo && state.paid_off);
   $("s-spend").textContent = "$" + spent.toFixed(3);
   renderControls(state.controls);
   $("demo-pill").hidden = !state.demo;
@@ -5691,7 +5693,7 @@ async function refreshState() {
     }
   }
   problemSignals();
-  if (stopped) setStatus("Stopped at the spend limit", "warn");
+  if (stopped) setStatus(state.paid_off ? "Paid checks are off" : "Stopped at the spend limit", state.paid_off ? "" : "warn");
   if (firstState) {
     firstState = false;
     route();
@@ -5707,7 +5709,7 @@ function handlePause(data) {
   }
   if (data.stopped) {
     stopped = true;
-    setStatus("Stopped at the spend limit", "warn");
+    setStatus(state?.paid_off ? "Paid checks are off" : "Stopped at the spend limit", state?.paid_off ? "" : "warn");
   }
 }
 
@@ -6246,7 +6248,7 @@ function askPlaceholder() {
   if (askContext.thing) return `Ask about the ${askContext.thing.noun}, such as: when did it arrive?`;
   if (askContext.occurrence) return "Ask about this, such as: who opened it?";
   const noun = rules.map((r) => r.pointed).find(Boolean);
-  return noun ? `Ask anything, such as: when did the ${noun} last open?` : "Ask anything, such as: what happened in the last hour?";
+  return noun ? `Ask anything, such as: what happened at the ${noun} in the last hour?` : "Ask anything, such as: what happened in the last hour?";
 }
 
 function askSuggestions() {

@@ -1193,6 +1193,10 @@ class App:
         """What counts against the shared limit: this server's spend and that of the servers beside it."""
         return self.spend() + self.spend_others()
 
+    def paid_off(self):
+        """True when the owner set today's model budget to $0: no paid check runs until they raise it."""
+        return spend_limit(self.spend_day) <= 0
+
     def over_budget(self):
         """True when today's money is used up: this server's own, or all the servers' together."""
         return self.spend() >= spend_limit(self.spend_day) or self.spend_shared() >= shared_limit(self.spend_day)
@@ -1245,6 +1249,8 @@ class App:
         """One honest line on whether a Whenever can see what it needs right now: {"level", "text"}."""
         if rule.paused:
             return {"level": "off", "text": "Stopped"}
+        if self.paid_off():
+            return {"level": "off", "text": "Paid checks are off on this server"}
         if self.over_budget():
             return {"level": "warn", "text": "Paused until midnight: today's model budget is used up"}
         if self.idle():
@@ -1278,6 +1284,12 @@ class App:
         if self.spend_flagged == self.spend_day:
             return True
         self.spend_flagged = self.spend_day
+        if self.paid_off():
+            # A limit of $0 is the owner's choice, not a day that ran out, so it says so and waits for no midnight.
+            self.problems.add(f"spend:{self.spend_day}", "Paid checks are off on this server", "note", "Spending",
+                              "The person who runs it set the daily model budget to $0. The live overlay, people, "
+                              "maps and saved moments go on.", "Set WHENEVER_SPEND_LIMIT above $0 to turn them on.")
+            return True
         self.problems.add(f"spend:{self.spend_day}", "Whenever paused for today: the model budget is used up", "warn",
                           "Spending", f"Spent ${self.spend():.2f} of ${spend_limit(self.spend_day):.2f} on {self.spend_day}"
                           + (f", and ${self.spend_shared():.2f} of ${shared_limit(self.spend_day):.2f} with the "
@@ -1927,6 +1939,7 @@ class App:
                 "spend_usd": round(self.spend(), 4),
                 "spend_shared_usd": round(self.spend_shared(), 4),
                 "spend_limit_usd": spend_limit(self.spend_day),
+                "paid_off": self.paid_off(),
                 "demo": DEMO,
                 "sites": camera_sites(SITES, self.cameras),
                 "stopped": self.stopped(),

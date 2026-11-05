@@ -113,6 +113,17 @@ class DailySpend(Folder):
             app.frame(jpeg.getvalue(), 2.0)
         self.assertEqual(len(app.timeline), 1, "a demo that nobody watches keeps nothing")
 
+    def test_a_zero_limit_reads_as_paid_checks_off_not_as_a_day_that_ran_out(self):
+        app = server.App(object(), self.folder, inline=True)
+        with mock.patch.object(server, "SPEND_LIMIT_USD", 0), mock.patch.object(server, "SPEND_EXTRA", ""):
+            self.assertTrue(app.stopped())
+            self.assertTrue(app.status()["paid_off"])
+            groups = app.problems.public()["groups"]
+            self.assertIn(("Paid checks are off on this server", "note"), [(g["title"], g["level"]) for g in groups])
+            self.assertFalse(any("midnight" in g["title"] for g in groups))
+            self.assertEqual(app.status()["problems"], [], "a choice of the owner is no warning on the page")
+        self.assertFalse(app.paid_off())
+
     def test_a_demo_sleeps_while_nobody_has_it_open(self):
         app = server.App(object(), self.folder, inline=True)
         with mock.patch.object(server, "IDLE_PAUSE_S", 600):

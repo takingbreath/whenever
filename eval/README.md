@@ -1,6 +1,6 @@
 # A small, labelled evaluation
 
-Two Whenevers ran once on 16 short clips through the real pipeline: `camera.py` played each clip as a camera, the server checked it with Muse Spark, and the Wonder-written rule decided and alerted. A basic motion trigger ran on the same clips. We labelled every clip before the run: [cases.json](cases.json) was committed in `b2f9431` at 03:40 IST, and the run started at 04:31 IST on 5 November 2026.
+Two Whenevers ran once on 16 short clips through the real pipeline: `camera.py` played each clip as a camera, the server checked it with Muse Spark, and the Wonder-written rule decided and alerted. A basic motion trigger ran on the same clips. We labelled every clip before the run: [cases.json](cases.json) was committed in `b2f9431` at 03:51 IST, and the run started at 04:11 IST on 5 November 2026. (The note inside cases.json says 03:40, the time the file was written.)
 
 **The two requests**
 - Gate: "Tell me when someone opens the gate, with the picture."
